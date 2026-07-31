@@ -252,7 +252,9 @@ get_char_dims( int len, const XYvec *max_dims, XYvec *cdims )
 
 
 /* Returns the texture-space coordinates of the bottom-left and upper-right
- * corners of the specified character (glyph) */
+ * corners of the specified character (glyph). "c" must already be an
+ * internal glyph code, as produced by utf8_decode_glyphs() below -- not
+ * a raw UTF-8 byte. */
 static void
 get_char_tex_coords( int c, XYvec *t_c0, XYvec *t_c1 )
 {
@@ -265,9 +267,12 @@ get_char_tex_coords( int c, XYvec *t_c0, XYvec *t_c1 )
 
 	/* Get position of lower-left corner of glyph
 	 * (in bitmap coordinates, w/origin at top-left)
-	 * Note: The following code is character-set-specific */
+	 * Note: The following code is character-set-specific.
+	 * Codes 32-127 are plain ASCII (rows 0-2 of the atlas); codes
+	 * 128-145 are the accented glyphs added for Hungarian (row 3 of
+	 * the atlas, see xmaps/charset.xbm) */
 	g = c;
-	if ((g < 32) || (g > 127))
+	if ((g < 32) || (g > 145))
 		g = 63; /* question mark */
 	gpos.x = (double)(((g - 32) & 31) * char_width);
 	gpos.y = (double)(((g - 32) >> 5) * char_height);
@@ -277,6 +282,103 @@ get_char_tex_coords( int c, XYvec *t_c0, XYvec *t_c1 )
 	t_c1->y = gpos.y / (double)charset_height;
 	t_c1->x = t_c0->x + t_char_dims.x;
 	t_c0->y = t_c1->y + t_char_dims.y;
+}
+
+
+/* Maps a Unicode code point to an internal glyph code. ASCII passes
+ * straight through; the Hungarian accented letters map to the extra
+ * glyphs appended in row 3 of the bitmap font (see xmaps/charset.xbm);
+ * anything else falls back to '?' since the font has no glyph for it. */
+static int
+unicode_cp_to_glyph( unsigned int cp )
+{
+	switch (cp) {
+		case 0x00E1: return 128; /* a acute */
+		case 0x00E9: return 129; /* e acute */
+		case 0x00ED: return 130; /* i acute */
+		case 0x00F3: return 131; /* o acute */
+		case 0x00F6: return 132; /* o diaeresis */
+		case 0x0151: return 133; /* o double acute */
+		case 0x00FA: return 134; /* u acute */
+		case 0x00FC: return 135; /* u diaeresis */
+		case 0x0171: return 136; /* u double acute */
+		case 0x00C1: return 137; /* A acute */
+		case 0x00C9: return 138; /* E acute */
+		case 0x00CD: return 139; /* I acute */
+		case 0x00D3: return 140; /* O acute */
+		case 0x00D6: return 141; /* O diaeresis */
+		case 0x0150: return 142; /* O double acute */
+		case 0x00DA: return 143; /* U acute */
+		case 0x00DC: return 144; /* U diaeresis */
+		case 0x0170: return 145; /* U double acute */
+		default:
+			if (cp >= 32 && cp <= 127)
+				return (int)cp;
+			return 63; /* '?' -- no glyph available */
+	}
+}
+
+
+/* Decodes a UTF-8 string into an array of internal glyph codes -- one
+ * per displayed character, not per byte. This is what makes multi-byte
+ * UTF-8 sequences (e.g. accented Hungarian letters) render as a single
+ * correct glyph instead of two '?' glyphs (one per byte). Any invalid
+ * or unsupported byte sequence falls back to '?'. "glyphs" must be able
+ * to hold at least strlen(text)+1 entries (a safe upper bound, since a
+ * string can never decode to more glyphs than it has bytes). Returns
+ * the number of glyphs written. */
+static size_t
+utf8_decode_glyphs( const char *text, int *glyphs, size_t max_glyphs )
+{
+	const unsigned char *p = (const unsigned char *)text;
+	size_t n = 0;
+
+	while (*p && n < max_glyphs) {
+		unsigned int cp;
+		int extra, i, valid = 1;
+
+		if (p[0] < 0x80) {
+			cp = p[0];
+			extra = 0;
+		}
+		else if ((p[0] & 0xE0) == 0xC0) {
+			cp = p[0] & 0x1F;
+			extra = 1;
+		}
+		else if ((p[0] & 0xF0) == 0xE0) {
+			cp = p[0] & 0x0F;
+			extra = 2;
+		}
+		else if ((p[0] & 0xF8) == 0xF0) {
+			cp = p[0] & 0x07;
+			extra = 3;
+		}
+		else {
+			/* Invalid lead byte */
+			glyphs[n++] = 63;
+			p++;
+			continue;
+		}
+
+		for (i = 1; i <= extra; i++) {
+			if ((p[i] & 0xC0) != 0x80) {
+				valid = 0;
+				break;
+			}
+			cp = (cp << 6) | (p[i] & 0x3F);
+		}
+
+		if (!valid) {
+			glyphs[n++] = 63;
+			p++;
+			continue;
+		}
+
+		glyphs[n++] = unicode_cp_to_glyph( cp );
+		p += extra + 1;
+	}
+
+	return n;
 }
 
 
@@ -342,8 +444,15 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	XYvec cdims;
 	XYvec t_c0, t_c1, c0, c1;
 	size_t len;
+	int *glyphs;
 
-	len = strlen( text );
+	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
+	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	if (len == 0) {
+		xfree( glyphs );
+		return;
+	}
+
 	get_char_dims( len, text_max_dims, &cdims );
 
 	/* Corners of first character */
@@ -355,7 +464,7 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	GLsizeiptr nverts = len * 4;
 	TextVertex *tv = NEW_ARRAY(TextVertex, nverts);
 	for (size_t i = 0; i < len; i++) {
-		get_char_tex_coords( text[i], &t_c0, &t_c1 );
+		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Each char defined by corners in zigzag order
 		// Lower left {pos, texcoords}
@@ -372,6 +481,7 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
+	xfree(glyphs);
 }
 
 
@@ -386,8 +496,15 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	XYvec hdelta, vdelta;
 	double sin_theta, cos_theta;
 	size_t len;
+	int *glyphs;
 
-	len = strlen( text );
+	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
+	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	if (len == 0) {
+		xfree( glyphs );
+		return;
+	}
+
 	get_char_dims( len, text_max_dims, &cdims );
 
 	sin_theta = sin( RAD(text_pos->theta) );
@@ -409,7 +526,7 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	GLsizeiptr nverts = len * 4;
 	TextVertex *tv = NEW_ARRAY(TextVertex, nverts);
 	for (size_t i = 0; i < len; i++) {
-		get_char_tex_coords( text[i], &t_c0, &t_c1 );
+		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Lower left
 		tv[j] = (TextVertex){{c0.x, c0.y, text_pos->z}, {t_c0.x, t_c0.y}};
@@ -429,6 +546,7 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
+	xfree(glyphs);
 }
 
 
@@ -444,12 +562,19 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 	double sin_theta, cos_theta;
 	double text_r;
 	size_t len;
+	int *glyphs;
 
 	/* Convert curved dimensions to straight equivalent */
 	straight_dims.x = (PI / 180.0) * text_pos->r * text_max_dims->theta;
 	straight_dims.y = text_max_dims->r;
 
-	len = strlen( text );
+	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
+	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	if (len == 0) {
+		xfree( glyphs );
+		return;
+	}
+
 	get_char_dims( len, &straight_dims, &cdims );
 
 	/* Radius of center of text line */
@@ -475,7 +600,7 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 		bwsl.x = 0.5 * (- cdims.y * cos_theta + cdims.x * sin_theta);
 		bwsl.y = 0.5 * (- cdims.y * sin_theta - cdims.x * cos_theta);
 
-		get_char_tex_coords( text[i], &t_c0, &t_c1 );
+		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Lower left
 		tv[j] = (TextVertex){{char_pos.x - fwsl.x, char_pos.y - fwsl.y, text_pos->z},
@@ -494,6 +619,7 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
+	xfree(glyphs);
 }
 
 // Set the text color
