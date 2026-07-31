@@ -316,15 +316,17 @@ camera_scrollbar_move_cb( GtkAdjustment *adj, const char *mesg )
 		case FSV_DISCV:
 		discv_scrollbar_move( value, axis );
 		break;
-
 		case FSV_MAPV:
 		mapv_scrollbar_move( value, axis );
 		break;
-
 		case FSV_TREEV:
 		treev_scrollbar_move( value, axis );
 		break;
-
+		case FSV_SPLASH:
+		case FSV_NONE:
+		/* Scrollbars can be adjusted programmatically while the UI is
+		 * loading (splash) or not yet initialized (none). Ignore. */
+		return;
 		SWITCH_FAIL
 	}
 
