@@ -36,3 +36,5 @@ src/fsv
 
 # meson
 builddir
+*.bak
+*.bak2
