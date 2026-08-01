@@ -17,6 +17,7 @@
 
 #include "animation.h"
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
+#include "colexp.h" /* colexp( ), COLEXP_EXPAND_ANY */
 #include "filelist.h"
 #include "geometry.h"
 #include "gui.h"
@@ -578,6 +579,7 @@ camera_update_scrollbars( boolean hard_update )
 	/* Get current scrollbar states */
 	switch (globals.fsv_mode) {
 		case FSV_SPLASH:
+		case FSV_NONE:
 		null_get_scrollbar_states(x_adj, y_adj);
 		break;
 
@@ -655,7 +657,10 @@ camera_pan_finish( void )
 		morph_finish( &TREEV_CAMERA(camera)->target.theta );
 		morph_finish( &TREEV_CAMERA(camera)->target.z );
 		break;
-
+		case FSV_SPLASH:
+		case FSV_NONE:
+		/* No active view to finish a pan on */
+		return;
 		SWITCH_FAIL
 	}
 }
@@ -691,7 +696,10 @@ camera_pan_break( void )
 		morph_break( &TREEV_CAMERA(camera)->target.theta );
 		morph_break( &TREEV_CAMERA(camera)->target.z );
 		break;
-
+		case FSV_SPLASH:
+		case FSV_NONE:
+		/* No active view to break a pan on */
+		return;
 		SWITCH_FAIL
 	}
 }
@@ -1053,12 +1061,15 @@ camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override )
 	GNode *prev_node = NULL;
 	boolean backtracking = FALSE;
 
-#ifdef DEBUG
-	/* Parent directory of target node must be expanded
-	 * (or at least be expanding) */
+/* Parent directory of target node must be expanded in the
+	 * directory tree widget before the camera can jump to it. It may
+	 * not be yet -- e.g. a node added to the tree after a bulk
+	 * "expand all" on a large, still-scanning directory tree -- so
+	 * expand it now instead of assuming it's already correct (which
+	 * used to be only checked, via assertion, in debug builds) */
 	if (NODE_IS_DIR(node->parent))
-		g_assert( dirtree_entry_expanded( node->parent ) );
-#endif
+		if (!dirtree_entry_expanded( node->parent ))
+			colexp( node->parent, COLEXP_EXPAND_ANY );
 
 	/* Temporarily disable part of the user interface */
 	window_set_access( FALSE );

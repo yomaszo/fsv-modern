@@ -17,6 +17,7 @@
 
 #include "about.h"
 #include "camera.h"
+#include "colexp.h"
 #include "dialog.h"
 #include "dirtree.h"
 #include "geometry.h"
@@ -241,7 +242,15 @@ filelist_select_cb(GtkTreeSelection *selection, gpointer data)
 		gtk_tree_model_get(model, &iter, FILELIST_NODE_COLUMN, &dnode, -1);
 		if (!dnode)
 			return;
+		/* The file's parent directory may not be expanded in the
+		 * tree view yet (e.g. right after a large "expand all"),
+		 * which would otherwise trip an assertion / leave the tree
+		 * widget out of sync when the camera jumps to this node */
+		if (NODE_IS_DIR(dnode->parent))
+			if (!dirtree_entry_expanded(dnode->parent))
+				colexp(dnode->parent, COLEXP_EXPAND_ANY);
 		camera_look_at(dnode);
+		
 		//g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
 		geometry_highlight_node(dnode, FALSE);
 		window_statusbar(SB_RIGHT, node_absname(dnode));
