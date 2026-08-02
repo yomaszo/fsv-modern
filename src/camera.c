@@ -160,6 +160,12 @@ camera_init( FsvMode mode, boolean initial_view )
 		break;
 
 		case FSV_TREEV:
+		/* root_dnode's tree-widget row may not be expanded yet
+		 * (e.g. switching to TreeV mode without ever having
+		 * opened any subdirectory) -- expand it first, since
+		 * geometry_treev_get_extents() requires a non-leaf root */
+		if (!dirtree_entry_expanded( root_dnode ))
+			colexp( root_dnode, COLEXP_EXPAND );
 		geometry_treev_get_extents( root_dnode, NULL, &ext_c1 );
 		d = field_distance( camera->fov, 2.0 * ext_c1.r );
 		if (initial_view) {
