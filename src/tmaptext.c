@@ -5,6 +5,7 @@
 /* fsv - 3D File System Visualizer
  * Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>
  * SPDX-FileCopyrightText: 2021 Janne Blomqvist <blomqvist.janne@gmail.com>
+ * SPDX-FileCopyrightText: 2026 Contributors (dynamic Pango/Cairo glyph atlas)
  *
  * SPDX-License-Identifier:  LGPL-2.1-or-later
  */
@@ -16,22 +17,82 @@
 #include "ogl.h"
 
 #include <gio/gio.h>
+#include <glib.h>
+#include <stdint.h>
+#include <cairo.h>
+#include <pango/pangocairo.h>
 
-/* Bitmap font definition */
-#define char_width 16
-#define char_height 32
-#include "xmaps/charset.xbm"
+/* ---------------------------------------------------------------------
+ * Dynamic glyph atlas
+ *
+ * Rather than a fixed, hand-drawn bitmap font (the old xmaps/charset.xbm,
+ * limited to ASCII plus a handful of manually added accented letters),
+ * text is now rendered on demand from a real font via Pango + Cairo, one
+ * Unicode code point at a time, into fixed-size cells of a single large
+ * OpenGL texture (the "atlas"). Each code point is rendered at most once
+ * per run; after that its texture coordinates are served from a cache.
+ *
+ * This supports any script the system's fonts cover -- Hungarian,
+ * German, French, Cyrillic, CJK, etc. -- with no manual glyph-drawing
+ * required, and everything lines up on a single shared baseline because
+ * every glyph is positioned using the font's own metrics rather than
+ * its individual ink extents.
+ * ------------------------------------------------------------------- */
+
+/* Size (in pixels) of the square texture atlas */
+#define ATLAS_SIZE 1024
+
+/* Size (in pixels) of the cell each glyph is rendered into. All glyphs
+ * occupy a cell of this size regardless of the font's natural advance
+ * width, so the rest of this file can keep treating text as a simple
+ * monospace grid (matching the original bitmap-font behavior) */
+#define CELL_W 32
+#define CELL_H 64
+
+#define ATLAS_COLS (ATLAS_SIZE / CELL_W)
+#define ATLAS_ROWS (ATLAS_SIZE / CELL_H)
+#define ATLAS_MAX_GLYPHS (ATLAS_COLS * ATLAS_ROWS)
+
+/* Font used to render glyphs. Any installed monospace font works; bold
+ * is used to stay visually close to the old bitmap font's weight */
+#define GLYPH_FONT_DESC "Monospace Bold 36"
+
+/* Fallback glyph shown for anything that fails to decode */
+#define FALLBACK_CODEPOINT ((gunichar)'?')
 
 
 /* Text can be squeezed to at most half its normal width */
 #define TEXT_MAX_SQUEEZE 2.0
 
 
-/* Normal character aspect ratio */
-static const double char_aspect_ratio = (double)char_width / (double)char_height;
+/* Normal character (cell) aspect ratio -- unchanged in spirit from the
+ * old fixed bitmap font, just driven by the atlas cell size now */
+static const double char_aspect_ratio = (double)CELL_W / (double)CELL_H;
 
-/* Font texture object */
+/* Font texture object (the atlas) */
 static GLuint text_tobj;
+
+/* Pango font description, created once and reused for every glyph */
+static PangoFontDescription *glyph_font_desc;
+
+/* Vertical pixel offset (within a cell) at which every glyph is drawn,
+ * computed once from the font's own metrics so that every glyph shares
+ * the same baseline regardless of its individual shape */
+static double glyph_baseline_y;
+
+/* Texture-space rectangle for one cached glyph */
+typedef struct {
+	float u0, v0, u1, v1;
+} GlyphUV;
+
+/* code point -> GlyphUV */
+static GHashTable *glyph_cache;
+
+/* Index of the next free cell in the atlas (simple bump allocator --
+ * more than enough cells exist for any realistic mix of scripts in one
+ * session; see glyph_cache_lookup() for the overflow fallback) */
+static int next_free_slot = 0;
+
 
 // Global state for modern GL
 static struct FsvGlTextState {
@@ -56,36 +117,6 @@ typedef struct {
 	GLfloat position[3];
 	GLfloat texCoord[2];
 } TextVertex;
-
-/* Simple XBM parser - bits to bytes. Caller assumes responsibility for
- * freeing the returned pixel buffer */
-static byte *
-xbm_pixels( const byte *xbm_bits, int pixel_count )
-{
-	int in_byte = 0;
-	int bitmask = 1;
-	int i;
-	byte *pixels;
-
-	pixels = NEW_ARRAY(byte, pixel_count);
-
-	for (i = 0; i < pixel_count; i++) {
-		/* Note: a 1 bit is black */
-		if ((int)xbm_bits[in_byte] & bitmask)
-			pixels[i] = 0;
-		else
-			pixels[i] = 255;
-
-		if (bitmask & 128) {
-			++in_byte;
-			bitmask = 1;
-		}
-		else
-			bitmask <<= 1;
-	}
-
-	return pixels;
-}
 
 
 // Initialize OpenGL text shaders
@@ -157,14 +188,165 @@ out:
 	return program;
 }
 
+
+/* Computes glyph_baseline_y from the chosen font's own metrics. Using
+ * font metrics (rather than each glyph's individual ink extents) is
+ * what guarantees every glyph -- accented or not, tall or short --
+ * lines up on the same baseline when placed side by side */
+static void
+glyph_metrics_init( void )
+{
+	cairo_surface_t *tmp_surface;
+	cairo_t *tmp_cr;
+	PangoLayout *tmp_layout;
+	PangoContext *pango_ctx;
+	PangoFontMetrics *metrics;
+	double ascent_px, descent_px, line_height_px;
+
+	tmp_surface = cairo_image_surface_create( CAIRO_FORMAT_A8, 1, 1 );
+	tmp_cr = cairo_create( tmp_surface );
+	tmp_layout = pango_cairo_create_layout( tmp_cr );
+	pango_layout_set_font_description( tmp_layout, glyph_font_desc );
+
+	pango_ctx = pango_layout_get_context( tmp_layout );
+	metrics = pango_context_get_metrics( pango_ctx, glyph_font_desc, NULL );
+
+	ascent_px = (double)pango_font_metrics_get_ascent( metrics ) / PANGO_SCALE;
+	descent_px = (double)pango_font_metrics_get_descent( metrics ) / PANGO_SCALE;
+	line_height_px = ascent_px + descent_px;
+
+	/* Center the font's own line box vertically within the cell; if
+	 * the font is too large for the cell this clamps to the top
+	 * rather than producing a negative offset */
+	glyph_baseline_y = MAX( 0.0, (CELL_H - line_height_px) / 2.0 );
+
+	pango_font_metrics_unref( metrics );
+	g_object_unref( tmp_layout );
+	cairo_destroy( tmp_cr );
+	cairo_surface_destroy( tmp_surface );
+}
+
+
+/* Renders a single Unicode code point into the given atlas cell
+ * (identified by its pixel-space top-left corner) and uploads it into
+ * the atlas texture. Assumes text_tobj is already bound */
+static void
+glyph_render_to_atlas( gunichar cp, int cell_px, int cell_py )
+{
+	cairo_surface_t *surface;
+	cairo_t *cr;
+	PangoLayout *layout;
+	char utf8_buf[6];
+	int utf8_len;
+	int logical_w, logical_h;
+	byte *alpha_pixels;
+	unsigned char *cairo_data;
+	int stride;
+	int x, y;
+
+	surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, CELL_W, CELL_H );
+	cr = cairo_create( surface );
+
+	/* Transparent background */
+	cairo_set_operator( cr, CAIRO_OPERATOR_CLEAR );
+	cairo_paint( cr );
+	cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+
+	/* Solid white glyph -- the fragment shader tints it using the
+	 * color uniform, same convention the old bitmap font used */
+	cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 1.0 );
+
+	utf8_len = g_unichar_to_utf8( cp, utf8_buf );
+
+	layout = pango_cairo_create_layout( cr );
+	pango_layout_set_font_description( layout, glyph_font_desc );
+	pango_layout_set_text( layout, utf8_buf, utf8_len );
+	pango_layout_get_pixel_size( layout, &logical_w, &logical_h );
+
+	cairo_move_to( cr, (CELL_W - logical_w) / 2.0, glyph_baseline_y );
+	pango_cairo_show_layout( cr, layout );
+
+	g_object_unref( layout );
+	cairo_surface_flush( surface );
+
+	/* Extract the alpha channel (glyph coverage) into a plain
+	 * single-byte-per-pixel buffer for glTexSubImage2D. cairo's
+	 * ARGB32 is premultiplied, but since we drew with full-white,
+	 * full-alpha source, alpha alone already gives us the coverage */
+	cairo_data = cairo_image_surface_get_data( surface );
+	stride = cairo_image_surface_get_stride( surface );
+	alpha_pixels = NEW_ARRAY(byte, CELL_W * CELL_H);
+	for (y = 0; y < CELL_H; y++) {
+		uint32_t *row = (uint32_t *)(cairo_data + y * stride);
+		for (x = 0; x < CELL_W; x++) {
+			uint32_t px = row[x];
+			alpha_pixels[y * CELL_W + x] = (byte)((px >> 24) & 0xFF);
+		}
+	}
+
+	glTexSubImage2D( GL_TEXTURE_2D, 0, cell_px, cell_py, CELL_W, CELL_H,
+			  GL_RED, GL_UNSIGNED_BYTE, alpha_pixels );
+
+	xfree( alpha_pixels );
+	cairo_destroy( cr );
+	cairo_surface_destroy( surface );
+}
+
+
+/* Returns the texture-space coordinates of the bottom-left and
+ * upper-right corners of the glyph for the given Unicode code point,
+ * rendering and caching it first if this is the first time it's been
+ * requested */
+static void
+glyph_cache_lookup( gunichar cp, XYvec *t_c0, XYvec *t_c1 )
+{
+	GlyphUV *uv;
+	int slot, col, row, px, py;
+
+	uv = g_hash_table_lookup( glyph_cache, GUINT_TO_POINTER(cp) );
+	if (!uv) {
+		if (next_free_slot >= ATLAS_MAX_GLYPHS) {
+			/* Atlas is full (extremely unlikely in one
+			 * session) -- fall back to '?' rather than
+			 * growing the atlas or evicting anything */
+			uv = g_hash_table_lookup( glyph_cache, GUINT_TO_POINTER(FALLBACK_CODEPOINT) );
+			g_assert( uv != NULL );
+		}
+		else {
+			slot = next_free_slot++;
+			col = slot % ATLAS_COLS;
+			row = slot / ATLAS_COLS;
+			px = col * CELL_W;
+			py = row * CELL_H;
+
+			glBindTexture( GL_TEXTURE_2D, text_tobj );
+			glyph_render_to_atlas( cp, px, py );
+			glGenerateMipmap( GL_TEXTURE_2D );
+
+			uv = g_new(GlyphUV, 1);
+			uv->u0 = (float)px / (float)ATLAS_SIZE;
+			uv->v0 = (float)(py + CELL_H) / (float)ATLAS_SIZE;
+			uv->u1 = (float)(px + CELL_W) / (float)ATLAS_SIZE;
+			uv->v1 = (float)py / (float)ATLAS_SIZE;
+			g_hash_table_insert( glyph_cache, GUINT_TO_POINTER(cp), uv );
+		}
+	}
+
+	t_c0->x = uv->u0;
+	t_c0->y = uv->v0;
+	t_c1->x = uv->u1;
+	t_c1->y = uv->v1;
+}
+
+
 /* Initializes texture-mapping state for drawing text */
 void
 text_init( void )
 {
 	float border_color[] = { 0.0, 0.0, 0.0, 1.0 };
-	byte *charset_pixels;
 
-	/* Set up text texture object */
+	/* Set up text texture object -- starts out empty; glyphs are
+	 * rendered into it lazily, on first use, by glyph_cache_lookup() */
 	glGenTextures( 1, &text_tobj );
 	glBindTexture( GL_TEXTURE_2D, text_tobj );
 
@@ -173,21 +355,31 @@ text_init( void )
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR );
 
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 	glTexParameterfv( GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border_color );
 
-	/* Load texture */
 	glPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
-	charset_pixels = xbm_pixels( charset_bits, charset_width * charset_height );
 	// In modern GL GL_RED is the only supported single channel texture format.
 	// But actually the texture is an alpha map that decides where the color
 	// (specified via a uniform) will be shown and where it will be transparent.
 	// In the fragment shader the red component in the texture is swizzled to
 	// the alpha component of the output color.
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, charset_width, charset_height,
-		     0, GL_RED, GL_UNSIGNED_BYTE, charset_pixels);
-	glGenerateMipmap(GL_TEXTURE_2D);
-	xfree( charset_pixels );
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, ATLAS_SIZE, ATLAS_SIZE,
+		     0, GL_RED, GL_UNSIGNED_BYTE, NULL);
+
+	glyph_font_desc = pango_font_description_from_string( GLYPH_FONT_DESC );
+	glyph_metrics_init( );
+
+	glyph_cache = g_hash_table_new_full( g_direct_hash, g_direct_equal, NULL, g_free );
+	next_free_slot = 0;
+
+	/* Pre-cache the fallback glyph so glyph_cache_lookup() always
+	 * has something to fall back to, even in the (extremely
+	 * unlikely) event the atlas fills up completely */
+	{
+		XYvec dummy0, dummy1;
+		glyph_cache_lookup( FALLBACK_CODEPOINT, &dummy0, &dummy1 );
+	}
 
 	glt.program = text_init_shaders();
 	if (!glt.program)
@@ -251,131 +443,35 @@ get_char_dims( int len, const XYvec *max_dims, XYvec *cdims )
 }
 
 
-/* Returns the texture-space coordinates of the bottom-left and upper-right
- * corners of the specified character (glyph). "c" must already be an
- * internal glyph code, as produced by utf8_decode_glyphs() below -- not
- * a raw UTF-8 byte. */
-static void
-get_char_tex_coords( int c, XYvec *t_c0, XYvec *t_c1 )
-{
-	static const XYvec t_char_dims = {
-		(double)char_width / (double)charset_width,
-		(double)char_height / (double)charset_height
-	};
-	XYvec gpos;
-	int g;
-
-	/* Get position of lower-left corner of glyph
-	 * (in bitmap coordinates, w/origin at top-left)
-	 * Note: The following code is character-set-specific.
-	 * Codes 32-127 are plain ASCII (rows 0-2 of the atlas); codes
-	 * 128-145 are the accented glyphs added for Hungarian (row 3 of
-	 * the atlas, see xmaps/charset.xbm) */
-	g = c;
-	if ((g < 32) || (g > 145))
-		g = 63; /* question mark */
-	gpos.x = (double)(((g - 32) & 31) * char_width);
-	gpos.y = (double)(((g - 32) >> 5) * char_height);
-
-	/* Texture coordinates */
-	t_c0->x = gpos.x / (double)charset_width;
-	t_c1->y = gpos.y / (double)charset_height;
-	t_c1->x = t_c0->x + t_char_dims.x;
-	t_c0->y = t_c1->y + t_char_dims.y;
-}
-
-
-/* Maps a Unicode code point to an internal glyph code. ASCII passes
- * straight through; the Hungarian accented letters map to the extra
- * glyphs appended in row 3 of the bitmap font (see xmaps/charset.xbm);
- * anything else falls back to '?' since the font has no glyph for it. */
-static int
-unicode_cp_to_glyph( unsigned int cp )
-{
-	switch (cp) {
-		case 0x00E1: return 128; /* a acute */
-		case 0x00E9: return 129; /* e acute */
-		case 0x00ED: return 130; /* i acute */
-		case 0x00F3: return 131; /* o acute */
-		case 0x00F6: return 132; /* o diaeresis */
-		case 0x0151: return 133; /* o double acute */
-		case 0x00FA: return 134; /* u acute */
-		case 0x00FC: return 135; /* u diaeresis */
-		case 0x0171: return 136; /* u double acute */
-		case 0x00C1: return 137; /* A acute */
-		case 0x00C9: return 138; /* E acute */
-		case 0x00CD: return 139; /* I acute */
-		case 0x00D3: return 140; /* O acute */
-		case 0x00D6: return 141; /* O diaeresis */
-		case 0x0150: return 142; /* O double acute */
-		case 0x00DA: return 143; /* U acute */
-		case 0x00DC: return 144; /* U diaeresis */
-		case 0x0170: return 145; /* U double acute */
-		default:
-			if (cp >= 32 && cp <= 127)
-				return (int)cp;
-			return 63; /* '?' -- no glyph available */
-	}
-}
-
-
-/* Decodes a UTF-8 string into an array of internal glyph codes -- one
- * per displayed character, not per byte. This is what makes multi-byte
- * UTF-8 sequences (e.g. accented Hungarian letters) render as a single
- * correct glyph instead of two '?' glyphs (one per byte). Any invalid
- * or unsupported byte sequence falls back to '?'. "glyphs" must be able
- * to hold at least strlen(text)+1 entries (a safe upper bound, since a
- * string can never decode to more glyphs than it has bytes). Returns
- * the number of glyphs written. */
+/* Decodes a UTF-8 string into an array of Unicode code points -- one
+ * per displayed character, not per byte. Any invalid byte sequence
+ * decodes to the fallback code point. "codepoints" must be able to
+ * hold at least strlen(text)+1 entries (a safe upper bound, since a
+ * string can never decode to more code points than it has bytes).
+ * Returns the number of code points written */
 static size_t
-utf8_decode_glyphs( const char *text, int *glyphs, size_t max_glyphs )
+utf8_decode_codepoints( const char *text, gunichar *codepoints, size_t max_codepoints )
 {
 	const unsigned char *p = (const unsigned char *)text;
 	size_t n = 0;
 
-	while (*p && n < max_glyphs) {
-		unsigned int cp;
-		int extra, i, valid = 1;
+	while (*p && n < max_codepoints) {
+		gunichar cp;
+		int char_len;
 
-		if (p[0] < 0x80) {
-			cp = p[0];
-			extra = 0;
-		}
-		else if ((p[0] & 0xE0) == 0xC0) {
-			cp = p[0] & 0x1F;
-			extra = 1;
-		}
-		else if ((p[0] & 0xF0) == 0xE0) {
-			cp = p[0] & 0x0F;
-			extra = 2;
-		}
-		else if ((p[0] & 0xF8) == 0xF0) {
-			cp = p[0] & 0x07;
-			extra = 3;
-		}
-		else {
-			/* Invalid lead byte */
-			glyphs[n++] = 63;
+		if (!g_utf8_validate( (const char *)p, -1, NULL )) {
+			/* Whole remaining tail is invalid; bail one byte
+			 * at a time so we still make progress */
+			codepoints[n++] = FALLBACK_CODEPOINT;
 			p++;
 			continue;
 		}
 
-		for (i = 1; i <= extra; i++) {
-			if ((p[i] & 0xC0) != 0x80) {
-				valid = 0;
-				break;
-			}
-			cp = (cp << 6) | (p[i] & 0x3F);
-		}
+		cp = g_utf8_get_char( (const char *)p );
+		char_len = g_utf8_next_char( (const char *)p ) - (const char *)p;
 
-		if (!valid) {
-			glyphs[n++] = 63;
-			p++;
-			continue;
-		}
-
-		glyphs[n++] = unicode_cp_to_glyph( cp );
-		p += extra + 1;
+		codepoints[n++] = cp;
+		p += char_len;
 	}
 
 	return n;
@@ -444,12 +540,12 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	XYvec cdims;
 	XYvec t_c0, t_c1, c0, c1;
 	size_t len;
-	int *glyphs;
+	gunichar *codepoints;
 
-	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
-	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	codepoints = NEW_ARRAY(gunichar, strlen( text ) + 1);
+	len = utf8_decode_codepoints( text, codepoints, strlen( text ) + 1 );
 	if (len == 0) {
-		xfree( glyphs );
+		xfree( codepoints );
 		return;
 	}
 
@@ -464,7 +560,7 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	GLsizeiptr nverts = len * 4;
 	TextVertex *tv = NEW_ARRAY(TextVertex, nverts);
 	for (size_t i = 0; i < len; i++) {
-		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
+		glyph_cache_lookup( codepoints[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Each char defined by corners in zigzag order
 		// Lower left {pos, texcoords}
@@ -481,7 +577,7 @@ text_draw_straight( const char *text, const XYZvec *text_pos, const XYvec *text_
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
-	xfree(glyphs);
+	xfree(codepoints);
 }
 
 
@@ -496,12 +592,12 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	XYvec hdelta, vdelta;
 	double sin_theta, cos_theta;
 	size_t len;
-	int *glyphs;
+	gunichar *codepoints;
 
-	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
-	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	codepoints = NEW_ARRAY(gunichar, strlen( text ) + 1);
+	len = utf8_decode_codepoints( text, codepoints, strlen( text ) + 1 );
 	if (len == 0) {
-		xfree( glyphs );
+		xfree( codepoints );
 		return;
 	}
 
@@ -526,7 +622,7 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	GLsizeiptr nverts = len * 4;
 	TextVertex *tv = NEW_ARRAY(TextVertex, nverts);
 	for (size_t i = 0; i < len; i++) {
-		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
+		glyph_cache_lookup( codepoints[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Lower left
 		tv[j] = (TextVertex){{c0.x, c0.y, text_pos->z}, {t_c0.x, t_c0.y}};
@@ -546,7 +642,7 @@ text_draw_straight_rotated( const char *text, const RTZvec *text_pos, const XYve
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
-	xfree(glyphs);
+	xfree(codepoints);
 }
 
 
@@ -562,16 +658,16 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 	double sin_theta, cos_theta;
 	double text_r;
 	size_t len;
-	int *glyphs;
+	gunichar *codepoints;
 
 	/* Convert curved dimensions to straight equivalent */
 	straight_dims.x = (PI / 180.0) * text_pos->r * text_max_dims->theta;
 	straight_dims.y = text_max_dims->r;
 
-	glyphs = NEW_ARRAY(int, strlen( text ) + 1);
-	len = utf8_decode_glyphs( text, glyphs, strlen( text ) + 1 );
+	codepoints = NEW_ARRAY(gunichar, strlen( text ) + 1);
+	len = utf8_decode_codepoints( text, codepoints, strlen( text ) + 1 );
 	if (len == 0) {
-		xfree( glyphs );
+		xfree( codepoints );
 		return;
 	}
 
@@ -600,7 +696,7 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 		bwsl.x = 0.5 * (- cdims.y * cos_theta + cdims.x * sin_theta);
 		bwsl.y = 0.5 * (- cdims.y * sin_theta - cdims.x * cos_theta);
 
-		get_char_tex_coords( glyphs[i], &t_c0, &t_c1 );
+		glyph_cache_lookup( codepoints[i], &t_c0, &t_c1 );
 		size_t j = i * 4;
 		// Lower left
 		tv[j] = (TextVertex){{char_pos.x - fwsl.x, char_pos.y - fwsl.y, text_pos->z},
@@ -619,7 +715,7 @@ text_draw_curved( const char *text, const RTZvec *text_pos, const RTvec *text_ma
 	}
 	draw_text_vertices(tv, len);
 	xfree(tv);
-	xfree(glyphs);
+	xfree(codepoints);
 }
 
 // Set the text color

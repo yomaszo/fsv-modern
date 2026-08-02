@@ -2,7 +2,8 @@
 
 project('fsv', 'c', version: '3.1alpha')
 gtkdep = [dependency('gtk+-3.0'),
-          dependency('gdk-pixbuf-2.0'), dependency('epoxy')]
+          dependency('gdk-pixbuf-2.0'), dependency('epoxy'),
+          dependency('pangocairo')]
 cglm_dep = dependency('cglm', fallback : ['cglm', 'cglm_dep'])
 compiler = meson.get_compiler('c')
 conf = configuration_data()

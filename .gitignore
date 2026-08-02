@@ -38,3 +38,4 @@ src/fsv
 builddir
 *.bak
 *.bak2
+/prototype/
