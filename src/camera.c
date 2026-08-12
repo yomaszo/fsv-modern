@@ -604,6 +604,17 @@ camera_update_scrollbars( boolean hard_update )
 		SWITCH_FAIL
 	}
 
+	/* Block camera_scrollbar_move_cb while we update these adjustments
+	 * ourselves -- gtk_adjustment_set_value( ) (called by both
+	 * adj_interpolate( ) and adj_copy( ) below) emits "value-changed"
+	 * synchronously, and without this guard that feeds straight back
+	 * into the camera's pan target while we're in the middle of
+	 * recomputing it from a *different* piece of camera state (e.g.
+	 * distance, right after a scroll-wheel zoom), producing a visible
+	 * drift in the view that has nothing to do with an actual pan */
+	g_signal_handlers_block_by_func( x_scrollbar_adj, G_CALLBACK (camera_scrollbar_move_cb), x_axis_mesg );
+	g_signal_handlers_block_by_func( y_scrollbar_adj, G_CALLBACK (camera_scrollbar_move_cb), y_axis_mesg );
+
 	if (camera_moving( )) {
 		/* Interpolate between current and previous scrollbar
 		 * states according to position in camera pan */
@@ -615,6 +626,9 @@ camera_update_scrollbars( boolean hard_update )
 		adj_copy( x_scrollbar_adj, x_adj );
 		adj_copy( y_scrollbar_adj, y_adj );
 	}
+
+	g_signal_handlers_unblock_by_func( x_scrollbar_adj, G_CALLBACK (camera_scrollbar_move_cb), x_axis_mesg );
+	g_signal_handlers_unblock_by_func( y_scrollbar_adj, G_CALLBACK (camera_scrollbar_move_cb), y_axis_mesg );
 
 	/* Update the scrollbar widgets */
 	if (hard_update || !gui_adjustment_widget_busy( x_scrollbar_adj )) {

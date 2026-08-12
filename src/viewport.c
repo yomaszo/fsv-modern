@@ -29,6 +29,11 @@
 /* Sensitivity factor used for manual camera control */
 #define MOUSE_SENSITIVITY 0.5
 
+/* How much a single scroll-wheel notch (or equivalent smooth-scroll
+ * delta) moves the camera toward/away from its target, in the same
+ * units as camera_dolly( )'s argument */
+#define SCROLL_DOLLY_STEP 32.0
+
 
 /* The node table, used to find a node by its ID number */
 static GNode **node_table = NULL;
@@ -234,6 +239,31 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		window_statusbar( SB_RIGHT, "" );
 		gui_cursor( gl_area_w, -1 );
 		indicated_node = NULL;
+		break;
+
+		case GDK_SCROLL:
+		{
+			GdkScrollDirection direction;
+			double dk = 0.0;
+
+			if (camera_moving( ))
+				break;
+
+			if (gdk_event_get_scroll_direction( event, &direction )) {
+				if (direction == GDK_SCROLL_UP)
+					dk = - SCROLL_DOLLY_STEP;
+				else if (direction == GDK_SCROLL_DOWN)
+					dk = SCROLL_DOLLY_STEP;
+				else if (direction == GDK_SCROLL_SMOOTH) {
+					double delta_x, delta_y;
+					if (gdk_event_get_scroll_deltas( event, &delta_x, &delta_y ))
+						dk = delta_y * SCROLL_DOLLY_STEP;
+				}
+			}
+
+			if (dk != 0.0)
+				camera_dolly( dk );
+		}
 		break;
 
 		default:
