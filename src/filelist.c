@@ -165,6 +165,11 @@ filelist_populate( GNode *dnode )
 
 /* This updates the file list to show (and select) a particular node
  * entry. The directory tree is also updated appropriately */
+/* Forward declaration -- defined further down, but filelist_show_entry( )
+ * (above it in this file) needs to reference it by name to block/unblock
+ * the signal handler around a programmatic selection change */
+static void filelist_select_cb(GtkTreeSelection *selection, gpointer data);
+
 void
 filelist_show_entry( GNode *node )
 {
@@ -210,6 +215,15 @@ filelist_show_entry( GNode *node )
 		row++;
 	}
 	GtkTreeSelection *select = gtk_tree_view_get_selection(GTK_TREE_VIEW(file_list_w));
+	/* Block filelist_select_cb while we select this row ourselves --
+	 * gtk_tree_selection_select_iter( ) emits "changed" synchronously,
+	 * which would otherwise re-enter camera_look_at( ) for the same
+	 * node we're already in the middle of finishing a pan to. If that
+	 * reentrant call ends up rebuilding the file list (e.g. because
+	 * the current directory context changes), "iter"/"model" below
+	 * become stale mid-function, and gtk_tree_model_get_path( ) on
+	 * them then hits a stamp-mismatch assertion. */
+	g_signal_handlers_block_by_func( select, G_CALLBACK (filelist_select_cb), NULL );
 	if (valid) {
 		gtk_tree_selection_select_iter(select, &iter);
 		/* Scroll file list to proper entry */
@@ -220,6 +234,7 @@ filelist_show_entry( GNode *node )
 	}
 	else
 		gtk_tree_selection_unselect_all(select);
+	g_signal_handlers_unblock_by_func( select, G_CALLBACK (filelist_select_cb), NULL );
 }
 
 

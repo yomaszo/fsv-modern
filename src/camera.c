@@ -343,7 +343,6 @@ camera_scrollbar_move_cb( GtkAdjustment *adj, const char *mesg )
 	redraw( );
 }
 
-
 /* Correspondence from window_init( ) */
 void
 camera_pass_scrollbar_widgets( GtkWidget *x_scrollbar_w, GtkWidget *y_scrollbar_w )
@@ -351,7 +350,6 @@ camera_pass_scrollbar_widgets( GtkWidget *x_scrollbar_w, GtkWidget *y_scrollbar_
 	/* Get the adjustments */
 	x_scrollbar_adj = gtk_range_get_adjustment(GTK_RANGE(x_scrollbar_w));
 	y_scrollbar_adj = gtk_range_get_adjustment(GTK_RANGE(y_scrollbar_w));
-
 	/* Connect signal handlers */
 	g_signal_connect( x_scrollbar_adj, "value_changed", G_CALLBACK (camera_scrollbar_move_cb), x_axis_mesg );
 	g_signal_connect( y_scrollbar_adj, "value_changed", G_CALLBACK (camera_scrollbar_move_cb), y_axis_mesg );
