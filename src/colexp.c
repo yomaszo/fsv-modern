@@ -173,6 +173,15 @@ colexp( GNode *dnode, ColExpMesg mesg )
 			colexp_time = TREEV_COLEXP_TIME;
 			break;
 
+			case FSV_SPLASH:
+			case FSV_NONE:
+			/* No visible viewport to animate yet (e.g. this can
+			 * run while the directory tree is being built up
+			 * during the initial scan) -- make any collapse/expand
+			 * instantaneous rather than asserting */
+			colexp_time = 0.0;
+			break;
+
                         SWITCH_FAIL
 		}
 	}
