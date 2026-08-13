@@ -1079,6 +1079,15 @@ camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override )
 	GNode *prev_node = NULL;
 	boolean backtracking = FALSE;
 
+	/* No active view to look at yet -- e.g. this can be reached during
+	 * startup (camera_init( )/fsv_set_mode( ) sequencing) before
+	 * globals.fsv_mode has actually been switched to the requested
+	 * visualization mode. Bail out before doing anything destructive
+	 * (window_set_access( FALSE ) below is only ever re-enabled
+	 * asynchronously, once the pan this function kicks off completes) */
+	if ((globals.fsv_mode == FSV_SPLASH) || (globals.fsv_mode == FSV_NONE))
+		return;
+
 /* Parent directory of target node must be expanded in the
 	 * directory tree widget before the camera can jump to it. It may
 	 * not be yet -- e.g. a node added to the tree after a bulk
@@ -1319,6 +1328,12 @@ camera_birdseye_view( boolean going_up )
 		new_cam->phi = 90.0;
 		switch (globals.fsv_mode) {
 			case FSV_DISCV:
+			/* DiscV is a flat top-down view with no heading concept
+			 * elsewhere in the code -- keep the current heading
+			 * unchanged rather than leaving new_cam->theta
+			 * uninitialized (it's unconditionally used in the
+			 * morph( &camera->theta, ... ) call below) */
+			new_cam->theta = camera->theta;
 			new_cam->distance = 2.0 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(root_dnode)->radius );
 			break;
 
