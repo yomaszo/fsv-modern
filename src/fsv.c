@@ -299,7 +299,14 @@ main( int argc, char **argv )
 	GtkApplication *app = gtk_application_new("com.github.jabl.fsv",
 	    MY_G_APPLICATION_FLAGS);
 	g_signal_connect(app, "activate", G_CALLBACK (window_init), &fid);
-	int status = g_application_run(G_APPLICATION (app), argc, argv);
+	/* We've already fully parsed argv ourselves above (mode flags,
+	 * root directory) and passed the result through via fid/user_data.
+	 * Don't hand the original argv to GApplication too -- its own
+	 * default command-line handling doesn't know about our custom
+	 * options (e.g. --treev) or the root-directory positional arg, and
+	 * errors out on both ("Unknown option --treev", "This application
+	 * can not open files") if given them. */
+	int status = g_application_run(G_APPLICATION (app), 0, NULL);
 	g_object_unref(app);
 
 	return status;

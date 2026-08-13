@@ -118,7 +118,14 @@ window_init(GtkApplication *app, gpointer user_data)
 /* Note: don't forget to remove the "-1" three lines up */
 #endif
 	gui_radio_menu_item_add( menu_w, _("MapV"), on_vis_mapv_activate, NULL );
+#if 0 /* TreeV mode is currently very slow/unresponsive on large
+       * directories (tens of thousands of entries); disabled from the
+       * menu until that's fixed. The mode itself, and all TreeV-
+       * specific code elsewhere, is untouched -- this only removes it
+       * from the Vis menu. Still reachable via the --treev command-line
+       * flag if ever needed for testing. */
 	gui_radio_menu_item_add( menu_w, _("TreeV"), on_vis_treev_activate, NULL );
+#endif
 
 	/* Color menu */
 	menu_w = gui_menu_add( menu_bar_w, _("Colors") );
