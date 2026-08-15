@@ -217,10 +217,12 @@ static double
 treev_camera_theta( double target_theta, GNode *target_node )
 {
 	double rel_theta;
+	GNode *platform_node;
 
 	if (geometry_treev_is_leaf( target_node )) {
-                rel_theta = target_theta - geometry_treev_platform_theta( target_node->parent );
-		return -15.0 * rel_theta / TREEV_GEOM_PARAMS(target_node->parent)->platform.arc_width;
+		platform_node = geometry_treev_platform_node( target_node );
+                rel_theta = target_theta - geometry_treev_platform_theta( platform_node );
+		return -15.0 * rel_theta / TREEV_GEOM_PARAMS(platform_node)->platform.arc_width;
 	}
 	else
 		return -0.125 * (target_theta - 90.0);
@@ -477,7 +479,16 @@ treev_get_scrollbar_states( GtkAdjustment *x_adj, GtkAdjustment *y_adj )
 	}
 	else {
 		if (geometry_treev_is_leaf( globals.current_node )) {
+			/* Walk up to the nearest ancestor that actually has a
+			 * platform -- globals.current_node's immediate parent is
+			 * normally non-leaf (expanded), but if that directory (or
+			 * one further up) gets collapsed while current_node is
+			 * still set to a leaf inside it, ->parent alone may itself
+			 * now be a leaf too, which would otherwise trip the
+			 * assertion in geometry_treev_platform_theta( ) below */
 			dnode = globals.current_node->parent;
+			while (geometry_treev_is_leaf( dnode ) && !NODE_IS_METANODE(dnode))
+				dnode = dnode->parent;
 			area_dims.theta = TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
 		}
 		else {
@@ -941,10 +952,12 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 	/* Construct desired camera state */
 
 	if (geometry_treev_is_leaf( node )) {
+		GNode *platform_node = geometry_treev_platform_node( node );
+
 		/* Target point */
-		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
-		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
-		TREEV_CAMERA(new_cam)->target.z = TREEV_GEOM_PARAMS(node->parent)->platform.height + (MAGIC_NUMBER - 1.0) * TREEV_GEOM_PARAMS(node)->leaf.height;
+		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
+		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
+		TREEV_CAMERA(new_cam)->target.z = TREEV_GEOM_PARAMS(platform_node)->platform.height + (MAGIC_NUMBER - 1.0) * TREEV_GEOM_PARAMS(node)->leaf.height;
 
 		/* Distance from target point */
 		top_dist = 2.5 * field_distance( camera->fov, (SQRT_2 * TREEV_LEAF_NODE_EDGE) );
@@ -1220,9 +1233,11 @@ camera_treev_lpan_look_at( GNode *node, double pan_time_override )
 	/* Construct desired camera state (stage 1) */
 
 	if (geometry_treev_is_leaf( node )) {
-		new_cam->theta = -15.0 * TREEV_GEOM_PARAMS(node)->leaf.theta / TREEV_GEOM_PARAMS(node->parent)->platform.arc_width;
-		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
-		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
+		GNode *platform_node = geometry_treev_platform_node( node );
+
+		new_cam->theta = -15.0 * TREEV_GEOM_PARAMS(node)->leaf.theta / TREEV_GEOM_PARAMS(platform_node)->platform.arc_width;
+		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
+		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
 	}
 	else {
 		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( node ) + (2.0 - MAGIC_NUMBER) * TREEV_GEOM_PARAMS(node)->platform.depth;

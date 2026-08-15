@@ -82,6 +82,7 @@ XYvec *geometry_discv_node_pos( GNode *node );
 double geometry_mapv_node_z0( GNode *node );
 double geometry_mapv_max_expanded_height( GNode *dnode );
 boolean geometry_treev_is_leaf( GNode *node );
+GNode *geometry_treev_platform_node( GNode *node );
 double geometry_treev_platform_r0( GNode *dnode );
 double geometry_treev_platform_theta( GNode *dnode );
 double geometry_treev_max_leaf_height( GNode *dnode );

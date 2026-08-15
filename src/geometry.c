@@ -1382,6 +1382,29 @@ geometry_treev_is_leaf( GNode *node )
 }
 
 
+/* Returns the nearest ancestor of node (possibly node itself) that
+ * currently has a platform of its own -- i.e. walks up past any leaf
+ * (collapsed directory, or non-directory) ancestors. Callers that need
+ * "the platform a leaf sits on" have historically just used node->parent
+ * directly, which is normally correct (a leaf's immediate parent must be
+ * expanded for the leaf to be visible/reachable at all) but can be wrong
+ * if an ancestor further up gets collapsed while a deeper node is still
+ * considered current/selected/clicked -- in that case node->parent may
+ * itself now be a leaf too, and code using it directly would trip the
+ * assertion in geometry_treev_platform_theta( ) */
+GNode *
+geometry_treev_platform_node( GNode *node )
+{
+	GNode *pnode;
+
+	pnode = geometry_treev_is_leaf( node ) ? node->parent : node;
+	while (geometry_treev_is_leaf( pnode ) && !NODE_IS_METANODE(pnode))
+		pnode = pnode->parent;
+
+	return pnode;
+}
+
+
 /* Returns the inner radius of a directory platform */
 double
 geometry_treev_platform_r0( GNode *dnode )
@@ -1507,10 +1530,12 @@ treev_get_corners( GNode *node, RTZvec *c0, RTZvec *c1 )
 	double padding_arc_width;
 
 	if (geometry_treev_is_leaf( node )) {
+		GNode *platform_node = geometry_treev_platform_node( node );
+
 		/* Absolute position of center of leaf node bottom */
-		pos.r = geometry_treev_platform_r0( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
-		pos.theta = geometry_treev_platform_theta( node->parent ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
-		pos.z = TREEV_GEOM_PARAMS(node->parent)->platform.height;
+		pos.r = geometry_treev_platform_r0( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
+		pos.theta = geometry_treev_platform_theta( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
+		pos.z = TREEV_GEOM_PARAMS(platform_node)->platform.height;
 
 		/* Calculate corners of leaf node */
 		leaf_arc_width = (180.0 * TREEV_LEAF_NODE_EDGE / PI) / pos.r;
