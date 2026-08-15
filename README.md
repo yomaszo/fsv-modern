@@ -1,5 +1,6 @@
 # FSV
-
+*****This repo forked from FrancisRussell/fsv , and the modifications are completely ai driven as I'm not a programmer.****
+Original Readme:
 This repo is a fork of [fsv](http://fsv.sourceforge.net/), updated to current environments.
 The original author is [Daniel Richard G.](https://github.com/iskunk), a former student of Computer Science at the MIT.
 
