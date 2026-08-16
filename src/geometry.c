@@ -1374,9 +1374,23 @@ static RTZvec treev_cursor_prev_c1;
 boolean
 geometry_treev_is_leaf( GNode *node )
 {
-	if (NODE_IS_DIR(node))
+	if (NODE_IS_DIR(node)) {
 		if (dirtree_entry_expanded( node ))
 			return FALSE;
+		/* The GTK tree-widget's expanded flag and the 3D deployment
+		 * value (which actually drives rendering -- see the various
+		 * DIR_NODE_DESC(node)->deployment uses throughout this file)
+		 * are two separate pieces of state that can end up out of
+		 * sync, e.g. after a bulk "expand all" on a directory whose
+		 * tree-widget row didn't exist yet at the time (GTK's tree
+		 * view populates rows lazily). When that happens, trust
+		 * deployment -- it's what's actually drawn on screen, so
+		 * treating the node as a leaf here would make camera
+		 * targeting (and anything else using this function) disagree
+		 * with what the user can see */
+		if (DIR_NODE_DESC(node)->deployment > (1.0 - EPSILON))
+			return FALSE;
+	}
 
 	return TRUE;
 }
