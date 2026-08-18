@@ -44,6 +44,29 @@ static Icon dir_colexp_mini_icons[2];
 static GNode *dirtree_current_dnode;
 
 
+/* Returns TRUE if the given directory has at least one subdirectory
+ * (i.e. something that could ever appear as an expandable child row in
+ * the tree widget). A directory with none can never satisfy
+ * dirtree_entry_expanded( ) -- there's nothing to expand -- so callers
+ * that gate an action on "already expanded" should usually also allow
+ * it when this returns FALSE, or that action becomes permanently
+ * unreachable for childless directories */
+boolean
+dirtree_entry_has_subdir( GNode *dnode )
+{
+	GNode *child;
+
+	if (!dnode)
+		return FALSE;
+
+	for (child = dnode->children; child != NULL; child = child->next)
+		if (NODE_IS_DIR(child))
+			return TRUE;
+
+	return FALSE;
+}
+
+
 /* Callback for button press in the directory tree area */
 static void
 dirtree_select_cb(GtkTreeSelection *selection, gpointer data)
@@ -63,7 +86,7 @@ dirtree_select_cb(GtkTreeSelection *selection, gpointer data)
 		gtk_tree_model_get(model, &iter, DIRTREE_NODE_COLUMN, &dnode, -1);
 		if (!dnode)
 			return;
-		if (dirtree_entry_expanded(dnode)) {
+		if (dirtree_entry_expanded(dnode) || !dirtree_entry_has_subdir(dnode)) {
 			camera_look_at( dnode );
 			g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
 			return;

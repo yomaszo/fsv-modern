@@ -270,7 +270,8 @@ discv_init_recursive( GNode *dnode, double stem_theta )
 
 	if (NODE_IS_DIR(dnode)) {
 		morph_break( &DIR_NODE_DESC(dnode)->deployment );
-		if (dirtree_entry_expanded( dnode ))
+		if (dirtree_entry_expanded( dnode ) ||
+		    (!dirtree_entry_has_subdir( dnode ) && (DIR_NODE_DESC(dnode)->deployment > (1.0 - EPSILON))))
 			DIR_NODE_DESC(dnode)->deployment = 1.0;
 		else
 			DIR_NODE_DESC(dnode)->deployment = 0.0;
@@ -652,7 +653,8 @@ mapv_init_recursive( GNode *dnode )
 	g_assert( NODE_IS_DIR(dnode) );
 
 	morph_break( &DIR_NODE_DESC(dnode)->deployment );
-	if (dirtree_entry_expanded( dnode ))
+	if (dirtree_entry_expanded( dnode ) ||
+	    (!dirtree_entry_has_subdir( dnode ) && (DIR_NODE_DESC(dnode)->deployment > (1.0 - EPSILON))))
 		DIR_NODE_DESC(dnode)->deployment = 1.0;
 	else
 		DIR_NODE_DESC(dnode)->deployment = 0.0;
@@ -1777,7 +1779,8 @@ treev_init_recursive( GNode *dnode )
 
 	if (NODE_IS_DIR(dnode)) {
 		morph_break( &DIR_NODE_DESC(dnode)->deployment );
-		if (dirtree_entry_expanded( dnode ))
+		if (dirtree_entry_expanded( dnode ) ||
+		    (!dirtree_entry_has_subdir( dnode ) && (DIR_NODE_DESC(dnode)->deployment > (1.0 - EPSILON))))
 			DIR_NODE_DESC(dnode)->deployment = 1.0;
 		else
 			DIR_NODE_DESC(dnode)->deployment = 0.0;

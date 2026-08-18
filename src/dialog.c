@@ -1422,7 +1422,8 @@ context_menu( GNode *node)
 	/* Create menu */
 	popup_menu_w = gtk_menu_new( );
 	if (NODE_IS_DIR(node)) {
-		if (dirtree_entry_expanded( node ))
+		if (dirtree_entry_expanded( node ) ||
+		    (!dirtree_entry_has_subdir( node ) && (DIR_NODE_DESC(node)->deployment > (1.0 - EPSILON))))
 			gui_menu_item_add( popup_menu_w, _("Collapse"), collapse_cb, node );
 		else {
 			gui_menu_item_add( popup_menu_w, _("Expand"), expand_cb, node );

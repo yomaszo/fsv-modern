@@ -71,7 +71,7 @@ filelist_reset_access( void )
 {
 	boolean enabled;
 
-        enabled = dirtree_entry_expanded( filelist_current_dnode );
+        enabled = dirtree_entry_expanded( filelist_current_dnode ) || !dirtree_entry_has_subdir( filelist_current_dnode );
 	gtk_widget_set_sensitive( file_list_w, enabled );
 
 	/* Extra fluff for interface niceness */
