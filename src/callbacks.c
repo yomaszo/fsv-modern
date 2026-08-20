@@ -20,6 +20,7 @@
 #include "color.h"
 #include "dialog.h"
 #include "fsv.h"
+#include "ogl.h"
 
 
 /* Radio menu items fire a callback on deselection as well as selection,
@@ -130,6 +131,14 @@ void
 on_help_about_fsv_activate( GtkMenuItem *menuitem, gpointer user_data )
 {
 	about( ABOUT_BEGIN );
+}
+
+
+/* Help -> Show FPS counter */
+void
+on_help_show_fps_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	ogl_set_fps_display( gtk_check_menu_item_get_active(menuitem) );
 }
 
 

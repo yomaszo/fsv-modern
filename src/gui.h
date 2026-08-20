@@ -102,6 +102,7 @@ void gui_keybind( GtkWidget *widget, char *keystroke );
 GtkWidget *gui_label_add( GtkWidget *parent_w, const char *label_text );
 GtkWidget *gui_menu_add( GtkWidget *parent_menu_w, const char *label );
 GtkWidget *gui_menu_item_add( GtkWidget *menu_w, const char *label, void (*callback)( ), void *callback_data );
+GtkWidget *gui_check_menu_item_add( GtkWidget *menu_w, const char *label, boolean init_state, void (*callback)( ), void *callback_data );
 void gui_radio_menu_begin( int init_selected );
 GtkWidget *gui_radio_menu_item_add( GtkWidget *menu_w, const char *label, void (*callback)( ), void *callback_data );
 GtkWidget *gui_notebook_add( GtkWidget *parent_w );

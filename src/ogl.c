@@ -26,6 +26,13 @@
 /* Main viewport OpenGL area widget */
 static GtkWidget *viewport_gl_area_w = NULL;
 
+/* FPS counter overlay */
+static GtkWidget *fps_label_w = NULL;
+static boolean fps_display_enabled = FALSE;
+static guint fps_redraw_timer_id = 0;
+static int fps_frame_count = 0;
+static double fps_last_update_time = 0.0;
+
 FsvGlState gl;
 AboutGlState aboutGL;
 
@@ -412,6 +419,54 @@ ogl_draw( void )
 }
 
 
+/* Stores the label widget used to display the FPS counter overlay
+ * (created in gui_gl_area_add( )) */
+void
+ogl_pass_fps_label( GtkWidget *label_w )
+{
+	fps_label_w = label_w;
+}
+
+
+/* Timer callback that keeps queuing new frames while the FPS counter is
+ * shown, so the label reflects the actual achievable frame rate rather
+ * than only however often the scene would otherwise need to redraw */
+static gboolean
+fps_redraw_tick( gpointer data )
+{
+	redraw( );
+	return G_SOURCE_CONTINUE;
+}
+
+
+/* Shows/hides the FPS counter overlay, and starts/stops the continuous
+ * redraw timer that drives it (only running while the counter is shown,
+ * so there's no needless overhead the rest of the time) */
+void
+ogl_set_fps_display( boolean enabled )
+{
+	fps_display_enabled = enabled;
+
+	if (fps_label_w == NULL)
+		return;
+
+	if (enabled) {
+		fps_frame_count = 0;
+		fps_last_update_time = xgettime( );
+		gtk_widget_show( fps_label_w );
+		if (fps_redraw_timer_id == 0)
+			fps_redraw_timer_id = g_timeout_add( 16, fps_redraw_tick, NULL );
+	}
+	else {
+		gtk_widget_hide( fps_label_w );
+		if (fps_redraw_timer_id != 0) {
+			g_source_remove( fps_redraw_timer_id );
+			fps_redraw_timer_id = 0;
+		}
+	}
+}
+
+
 static gboolean
 render(GtkGLArea *area, GdkGLContext *context)
 {
@@ -443,6 +498,20 @@ render(GtkGLArea *area, GdkGLContext *context)
 		prev_mode = globals.fsv_mode;
                 if (globals.fsv_mode != FSV_SPLASH)
 			return FALSE;
+	}
+
+	if (fps_display_enabled && fps_label_w != NULL) {
+		double now = xgettime( );
+
+		++fps_frame_count;
+		if ((now - fps_last_update_time) >= 0.5) {
+			double fps = (double)fps_frame_count / (now - fps_last_update_time);
+			char buf[32];
+			snprintf( buf, sizeof(buf), "%.1f FPS", fps );
+			gtk_label_set_text( GTK_LABEL(fps_label_w), buf );
+			fps_frame_count = 0;
+			fps_last_update_time = now;
+		}
 	}
 
 	// we completed our drawing; the draw commands will be

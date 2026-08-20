@@ -50,6 +50,10 @@ on_help_about_fsv_activate             (GtkMenuItem     *menuitem,
                                         gpointer         user_data);
 
 void
+on_help_show_fps_toggled               (GtkCheckMenuItem *menuitem,
+                                        gpointer         user_data);
+
+void
 on_back_button_clicked                 (GtkButton       *button,
                                         gpointer         user_data);
 

@@ -156,6 +156,8 @@ window_init(GtkApplication *app, gpointer user_data)
 	/* Help menu items */
 	gui_menu_item_add( menu_w, _("Contents..."), on_help_contents_activate, NULL );
 	gui_separator_add( menu_w );
+	gui_check_menu_item_add( menu_w, _("Show FPS"), FALSE, on_help_show_fps_toggled, NULL );
+	gui_separator_add( menu_w );
 	gui_menu_item_add( menu_w, _("About fsv..."), on_help_about_fsv_activate, NULL );
 
 	/* Done with the menu bar */

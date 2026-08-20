@@ -612,6 +612,9 @@ GtkWidget *
 gui_gl_area_add( GtkWidget *parent_w )
 {
 	GtkWidget *gl_area_w;
+	GtkWidget *overlay_w;
+	GtkWidget *fps_label_w;
+	GtkCssProvider *css_provider;
 	int bitmask = 0;
 
 	gl_area_w = ogl_widget_new( );
@@ -626,7 +629,39 @@ gui_gl_area_add( GtkWidget *parent_w )
 	bitmask |= GDK_LEAVE_NOTIFY_MASK;
 	bitmask |= GDK_SCROLL_MASK;
 	gtk_widget_set_events( GTK_WIDGET(gl_area_w), bitmask );
-	parent_child_full( parent_w, gl_area_w, EXPAND, FILL );
+
+	/* Wrap the GL area in an overlay so the FPS counter (see
+	 * ogl_set_fps_display( )) can float on top of it without
+	 * disturbing the 3D rendering itself */
+	overlay_w = gtk_overlay_new( );
+	parent_child_full( parent_w, overlay_w, EXPAND, FILL );
+	gtk_container_add( GTK_CONTAINER(overlay_w), gl_area_w );
+	gtk_widget_show( gl_area_w );
+
+	fps_label_w = gtk_label_new( "" );
+	gtk_widget_set_halign( fps_label_w, GTK_ALIGN_START );
+	gtk_widget_set_valign( fps_label_w, GTK_ALIGN_START );
+	gtk_widget_set_margin_start( fps_label_w, 6 );
+	gtk_widget_set_margin_top( fps_label_w, 6 );
+	gtk_widget_set_name( fps_label_w, "fsv-fps-label" );
+
+	css_provider = gtk_css_provider_new( );
+	gtk_css_provider_load_from_data( css_provider,
+		"#fsv-fps-label {"
+		"  background-color: rgba(0, 0, 0, 0.55);"
+		"  color: #ffffff;"
+		"  padding: 2px 6px;"
+		"  font-family: monospace;"
+		"}", -1, NULL );
+	gtk_style_context_add_provider( gtk_widget_get_style_context(fps_label_w),
+		GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION );
+	g_object_unref( css_provider );
+
+	/* Added as a floating overlay child, not shown yet -- stays
+	 * hidden until the user turns it on via the menu */
+	gtk_overlay_add_overlay( GTK_OVERLAY(overlay_w), fps_label_w );
+
+	ogl_pass_fps_label( fps_label_w );
 
 	return gl_area_w;
 }
@@ -737,6 +772,24 @@ gui_menu_item_add( GtkWidget *menu_w, const char *label, void (*callback)( ), vo
 	gtk_widget_show( menu_item_w );
 
 	return menu_item_w;
+}
+
+
+/* Adds a check(box) menu item to a menu. init_state is the initial
+ * checked/unchecked state; the callback fires on "toggled" */
+GtkWidget *
+gui_check_menu_item_add( GtkWidget *menu_w, const char *label, boolean init_state, void (*callback)( ), void *callback_data )
+{
+	GtkWidget *chkmenu_item_w;
+
+	chkmenu_item_w = gtk_check_menu_item_new_with_label( label );
+	gtk_check_menu_item_set_active( GTK_CHECK_MENU_ITEM(chkmenu_item_w), init_state );
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu_w), chkmenu_item_w);
+	if (callback != NULL)
+		g_signal_connect(G_OBJECT(chkmenu_item_w), "toggled", G_CALLBACK(callback), callback_data);
+	gtk_widget_show( chkmenu_item_w );
+
+	return chkmenu_item_w;
 }
 
 
