@@ -546,6 +546,13 @@ discv_draw( boolean high_detail )
 #define MAPV_BORDER_PROPORTION	0.01
 #define MAPV_ROOT_ASPECT_RATIO	1.2
 
+/* Labels whose on-screen width would be smaller than this fraction of
+ * the camera's current distance from its pivot are skipped entirely,
+ * rather than paying for a full text-rendering draw call to produce an
+ * unreadably tiny speck. This matters a lot when a directory with many
+ * thousands of files is open at once. */
+#define MAPV_LABEL_MIN_SIZE_RATIO	0.01
+
 /* Messages for mapv_draw_recursive( ) */
 enum {
 	MAPV_DRAW_GEOMETRY,
@@ -1101,6 +1108,11 @@ mapv_apply_label( GNode *node )
 	/* (Maximum) dimensions of label */
 	label_dims.x = 0.8125 * dims.x;
 	label_dims.y = (2.0 - MAGIC_NUMBER) * dims.y;
+
+	/* Skip labels too small to read at the camera's current distance --
+	 * see MAPV_LABEL_MIN_SIZE_RATIO */
+	if (label_dims.x < (MAPV_LABEL_MIN_SIZE_RATIO * camera->distance))
+		return;
 
 	/* Center position of label */
 	label_pos.x = MAPV_NODE_CENTER_X(node);
