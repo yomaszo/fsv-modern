@@ -1139,6 +1139,38 @@ mapv_draw_recursive( GNode *dnode, int action )
 
 	mat4 tmpmat;
 	glm_mat4_copy(gl.modelview, tmpmat);
+
+	/* Frustum cull: if dnode's own footprint (which entirely contains
+	 * all of its descendants' footprints, since they're laid out
+	 * within it) can't possibly be visible right now, skip drawing it
+	 * and recursing into it altogether. Deliberately does NOT bound
+	 * the z-extent tightly (that would require walking the whole
+	 * subtree just to find its peak height, defeating the point of
+	 * culling it) -- left/right/top/bottom culling from the x/y
+	 * footprint alone already covers the common "camera is looking
+	 * elsewhere" case this exists for. Tested using the modelview as
+	 * it stood on entry (i.e. dnode's parent's frame), matching where
+	 * c0/c1 are defined.
+	 * The metanode is skipped here: unlike every real directory, its
+	 * c0/c1 are never actually laid out (only its height is set, in
+	 * mapv_init( )), so they can't be used for a meaningful bound. */
+	if (!NODE_IS_METANODE(dnode)) {
+		MapVGeomParams *dnode_gp = MAPV_GEOM_PARAMS(dnode);
+		vec3 bbmin, bbmax;
+		mat4 mvp;
+
+		bbmin[0] = (float)MIN(dnode_gp->c0.x, dnode_gp->c1.x);
+		bbmax[0] = (float)MAX(dnode_gp->c0.x, dnode_gp->c1.x);
+		bbmin[1] = (float)MIN(dnode_gp->c0.y, dnode_gp->c1.y);
+		bbmax[1] = (float)MAX(dnode_gp->c0.y, dnode_gp->c1.y);
+		bbmin[2] = -1.0e6f;
+		bbmax[2] = 1.0e6f;
+
+		glm_mat4_mul(gl.projection, tmpmat, mvp);
+		if (ogl_aabb_outside_frustum(mvp, bbmin, bbmax))
+			return;
+	}
+
 	glm_translate(gl.modelview, (vec3){0.0f, 0.0f, MAPV_GEOM_PARAMS(dnode)->height});
 
 	dir_ndesc = DIR_NODE_DESC(dnode);

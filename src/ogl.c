@@ -428,6 +428,41 @@ ogl_pass_fps_label( GtkWidget *label_w )
 }
 
 
+/* Returns TRUE if the axis-aligned bounding box [bbmin, bbmax] (in
+ * whatever space "mvp" transforms from) is entirely outside the camera's
+ * view frustum -- i.e. can be skipped without affecting anything drawn
+ * on screen. Extracts the six frustum planes from the combined
+ * projection*modelview matrix (Gribb/Hartmann method) and tests the
+ * box's "positive vertex" against each one. */
+boolean
+ogl_aabb_outside_frustum( mat4 mvp, vec3 bbmin, vec3 bbmax )
+{
+	int i;
+	vec4 planes[6];
+
+	for (i = 0; i < 4; i++) {
+		planes[0][i] = mvp[i][3] + mvp[i][0]; /* left */
+		planes[1][i] = mvp[i][3] - mvp[i][0]; /* right */
+		planes[2][i] = mvp[i][3] + mvp[i][1]; /* bottom */
+		planes[3][i] = mvp[i][3] - mvp[i][1]; /* top */
+		planes[4][i] = mvp[i][3] + mvp[i][2]; /* near */
+		planes[5][i] = mvp[i][3] - mvp[i][2]; /* far */
+	}
+
+	for (i = 0; i < 6; i++) {
+		float px = (planes[i][0] >= 0.0f) ? bbmax[0] : bbmin[0];
+		float py = (planes[i][1] >= 0.0f) ? bbmax[1] : bbmin[1];
+		float pz = (planes[i][2] >= 0.0f) ? bbmax[2] : bbmin[2];
+		float d = planes[i][0]*px + planes[i][1]*py + planes[i][2]*pz + planes[i][3];
+
+		if (d < 0.0f)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+
 /* Timer callback that keeps queuing new frames while the FPS counter is
  * shown, so the label reflects the actual achievable frame rate rather
  * than only however often the scene would otherwise need to redraw */

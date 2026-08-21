@@ -107,6 +107,7 @@ void ogl_draw( void );
 void _ogl_error(const char *filename, int line_num);
 GLuint ogl_select_modern(GLint x, GLint y);
 void ogl_set_fps_display( boolean enabled );
+boolean ogl_aabb_outside_frustum( mat4 mvp, vec3 bbmin, vec3 bbmax );
 #ifdef __GTK_H__
 GtkWidget *ogl_widget_new( void );
 void ogl_pass_fps_label( GtkWidget *label_w );
