@@ -553,6 +553,17 @@ discv_draw( boolean high_detail )
  * thousands of files is open at once. */
 #define MAPV_LABEL_MIN_SIZE_RATIO	0.01
 
+/* A directory whose footprint would project to less than this fraction
+ * of the screen (in both width and height, in normalized device
+ * coordinates) is skipped entirely -- geometry and all -- even if it's
+ * technically still inside the view frustum. This matters for a very
+ * large directory (e.g. one that dominates the tree by size, and so
+ * has a correspondingly huge footprint): its bounding box can remain
+ * inside the theoretical view volume while the camera is zoomed into a
+ * small, unrelated corner elsewhere, where it wouldn't actually be
+ * visible (or occupies only a meaningless sliver of the screen). */
+#define MAPV_GEOMETRY_MIN_NDC_SIZE	0.02
+
 /* Messages for mapv_draw_recursive( ) */
 enum {
 	MAPV_DRAW_GEOMETRY,
@@ -1158,6 +1169,7 @@ mapv_draw_recursive( GNode *dnode, int action )
 		MapVGeomParams *dnode_gp = MAPV_GEOM_PARAMS(dnode);
 		vec3 bbmin, bbmax;
 		mat4 mvp;
+		boolean culled;
 
 		bbmin[0] = (float)MIN(dnode_gp->c0.x, dnode_gp->c1.x);
 		bbmax[0] = (float)MAX(dnode_gp->c0.x, dnode_gp->c1.x);
@@ -1167,7 +1179,58 @@ mapv_draw_recursive( GNode *dnode, int action )
 		bbmax[2] = 1.0e6f;
 
 		glm_mat4_mul(gl.projection, tmpmat, mvp);
-		if (ogl_aabb_outside_frustum(mvp, bbmin, bbmax))
+		culled = ogl_aabb_outside_frustum(mvp, bbmin, bbmax);
+
+		/* Even when not fully outside the frustum, also cull if this
+		 * directory's footprint would project to a negligible size on
+		 * screen, or would fall entirely outside the [-1,1] NDC screen
+		 * rectangle -- see MAPV_GEOMETRY_MIN_NDC_SIZE. Only applied when
+		 * all four footprint corners are in front of the camera (w>0
+		 * for all); a box straddling the camera is a different,
+		 * close-up case this isn't meant to handle, so it's left to
+		 * the frustum test above instead. */
+		if (!culled) {
+			float cx[4] = { bbmin[0], bbmax[0], bbmin[0], bbmax[0] };
+			float cy[4] = { bbmin[1], bbmin[1], bbmax[1], bbmax[1] };
+			float ndc_x0 = 1.0e9f, ndc_x1 = -1.0e9f;
+			float ndc_y0 = 1.0e9f, ndc_y1 = -1.0e9f;
+			boolean all_in_front = TRUE;
+			int corner;
+
+			for (corner = 0; corner < 4; corner++) {
+				vec4 p = { cx[corner], cy[corner], 0.0f, 1.0f };
+				vec4 clip;
+
+				glm_mat4_mulv(mvp, p, clip);
+				if (clip[3] <= 0.0001f) {
+					all_in_front = FALSE;
+					break;
+				}
+				ndc_x0 = MIN(ndc_x0, clip[0] / clip[3]);
+				ndc_x1 = MAX(ndc_x1, clip[0] / clip[3]);
+				ndc_y0 = MIN(ndc_y0, clip[1] / clip[3]);
+				ndc_y1 = MAX(ndc_y1, clip[1] / clip[3]);
+			}
+
+			if (all_in_front) {
+				/* Genuinely tiny on screen */
+				boolean tiny = ((ndc_x1 - ndc_x0) < MAPV_GEOMETRY_MIN_NDC_SIZE) &&
+					       ((ndc_y1 - ndc_y0) < MAPV_GEOMETRY_MIN_NDC_SIZE);
+				/* Entirely outside the [-1,1] NDC screen rectangle,
+				 * regardless of size -- catches large-footprint
+				 * directories sitting well off to the side, which the
+				 * size check alone misses (a big box can have a
+				 * large NDC width while still being nowhere near the
+				 * viewport). */
+				boolean offscreen = (ndc_x1 < -1.0f) || (ndc_x0 > 1.0f) ||
+						     (ndc_y1 < -1.0f) || (ndc_y0 > 1.0f);
+
+				if (tiny || offscreen)
+					culled = TRUE;
+			}
+		}
+
+		if (culled)
 			return;
 	}
 
