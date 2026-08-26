@@ -219,6 +219,13 @@ struct _DirNodeDesc {
 	void		*tnode;	/* Directory tree entry */
 	/* Flag: TRUE if directory geometry is being drawn expanded */
 	bitfield	geom_expanded : 1;
+	/* Cached mirror of gtk_tree_view_row_expanded( ) for this directory's
+	 * tree-widget row. Querying the GTK widget directly is expensive,
+	 * and dirtree_entry_expanded( ) (which reads this) is called very
+	 * frequently -- e.g. once per directory, potentially many times per
+	 * TreeV arrange pass. Kept in sync at every point in dirtree.c where
+	 * the row's actual GTK expansion state can change. */
+	bitfield	tree_row_expanded : 1;
 	/* Flags: TRUE if geometry in needs to be rebuilt and reuploaded */
 	// TODO for VBO's
 };

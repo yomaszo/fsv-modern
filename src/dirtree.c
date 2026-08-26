@@ -161,6 +161,7 @@ dirtree_collapse_cb(GtkTreeView *tree, GtkTreeIter *iter, GtkTreePath *path, gpo
 
 	//gtk_tree_model_get_iter(model, &iter, tnode);
 	gtk_tree_model_get(model, iter, DIRTREE_NODE_COLUMN, &dnode, -1);
+	DIR_NODE_DESC(dnode)->tree_row_expanded = FALSE;
 	colexp( dnode, COLEXP_COLLAPSE_RECURSIVE );
 }
 
@@ -178,6 +179,7 @@ dirtree_expand_cb(GtkTreeView *tree, GtkTreeIter *iter, GtkTreePath *path, gpoin
 	//GtkTreeIter iter;
 	//gtk_tree_model_get_iter(model, &iter, tnode);
 	gtk_tree_model_get(model, iter, DIRTREE_NODE_COLUMN, &dnode, -1);
+	DIR_NODE_DESC(dnode)->tree_row_expanded = TRUE;
 	colexp( dnode, COLEXP_EXPAND );
 }
 
@@ -247,6 +249,7 @@ dirtree_entry_new( GNode *dnode )
 	expanded = g_node_depth( dnode ) <= 2;
 
 	DIR_NODE_DESC(dnode)->tnode = gui_tree_node_add( dir_tree_w, parent_tnode, dir_colexp_mini_icons, name, expanded, dnode );
+	DIR_NODE_DESC(dnode)->tree_row_expanded = expanded;
 }
 
 
@@ -286,7 +289,13 @@ dirtree_entry_show( GNode *dnode )
 }
 
 
-/* Returns TRUE if the entry for the given directory is expanded */
+/* Returns TRUE if the entry for the given directory is expanded.
+ * Reads a cache mirroring the GTK tree widget's row-expanded state
+ * (see tree_row_expanded in DirNodeDesc) rather than querying GTK
+ * directly -- this is called very frequently (once per directory,
+ * potentially many times per TreeV arrange pass), and the GTK query
+ * itself is not free. The cache is kept in sync at every point in
+ * this file where a row's actual GTK expansion state can change. */
 boolean
 dirtree_entry_expanded( GNode *dnode )
 {
@@ -295,7 +304,7 @@ dirtree_entry_expanded( GNode *dnode )
 
 	g_assert( NODE_IS_DIR(dnode) );
 
-	return gtk_tree_view_row_expanded(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode);
+	return DIR_NODE_DESC(dnode)->tree_row_expanded;
 }
 
 
@@ -329,6 +338,11 @@ dirtree_entry_collapse_recursive( GNode *dnode )
 	block_colexp_handlers( );
 	gtk_tree_view_collapse_row(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode);
 	unblock_colexp_handlers( );
+
+	/* Collapsing a row in GTK does not clear its descendants' own
+	 * internal expanded state (they simply become invisible) -- only
+	 * this directory's own row-expanded state actually changed */
+	DIR_NODE_DESC(dnode)->tree_row_expanded = FALSE;
 }
 
 
@@ -338,6 +352,8 @@ dirtree_entry_collapse_recursive( GNode *dnode )
 void
 dirtree_entry_expand( GNode *dnode )
 {
+	GNode *up_node;
+
 	if (!dnode)
 		return;
 
@@ -346,6 +362,34 @@ dirtree_entry_expand( GNode *dnode )
 	block_colexp_handlers( );
 	gtk_tree_view_expand_to_path(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode);
 	unblock_colexp_handlers( );
+
+	/* This directory and all of its ancestors are now expanded in the
+	 * tree widget */
+	up_node = dnode;
+	while (NODE_IS_DIR(up_node)) {
+		DIR_NODE_DESC(up_node)->tree_row_expanded = TRUE;
+		up_node = up_node->parent;
+	}
+}
+
+
+/* Helper function for dirtree_entry_expand_recursive( ): marks the cached
+ * expanded flag TRUE for dnode and its entire directory subtree, mirroring
+ * what gtk_tree_view_expand_row( ..., TRUE ) just did to the tree widget
+ * in a single call */
+static void
+dirtree_mark_subtree_expanded( GNode *dnode )
+{
+	GNode *node;
+
+	DIR_NODE_DESC(dnode)->tree_row_expanded = TRUE;
+
+	node = dnode->children;
+	while (node != NULL) {
+		if (NODE_IS_DIR(node))
+			dirtree_mark_subtree_expanded( node );
+		node = node->next;
+	}
 }
 
 
@@ -372,6 +416,12 @@ dirtree_entry_expand_recursive( GNode *dnode )
 	block_colexp_handlers( );
 	gtk_tree_view_expand_row(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode, TRUE);
 	unblock_colexp_handlers( );
+
+	/* The above expanded dnode and its entire subtree in the tree
+	 * widget in one call; mirror that in the cache with one walk,
+	 * done once here rather than paying for a live GTK query on every
+	 * future read of dirtree_entry_expanded( ) for these directories */
+	dirtree_mark_subtree_expanded( dnode );
 }
 
 
