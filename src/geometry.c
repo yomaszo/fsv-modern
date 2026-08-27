@@ -2722,6 +2722,20 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 	}
 
 	if (action == TREEV_DRAW_LABELS) {
+		/* By this point, gl.modelview (the CPU-side matrix) is
+		 * correctly back to this node's own frame -- restored after
+		 * each recursive child call below. But the GPU-side text MVP
+		 * uniform is shared, global state: every child call along the
+		 * way re-uploaded it to ITS OWN frame via ogl_upload_matrices( ),
+		 * and never restored it afterward. So without refreshing it
+		 * here, this node's own labels would be drawn using whatever
+		 * frame the last-visited child/grandchild left behind --
+		 * consistent internally (all of this node's labels use the same
+		 * stale matrix, so they stay correctly positioned relative to
+		 * each other) but shifted as a whole block relative to where
+		 * this node's platform actually is. */
+		ogl_upload_matrices(TRUE);
+
 		/* Draw name label(s) */
 		if (dir_collapsed)
 		{
