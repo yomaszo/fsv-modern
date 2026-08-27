@@ -394,10 +394,16 @@ dirtree_mark_subtree_expanded( GNode *dnode )
 
 
 /* Recursively expands the entire directory tree subtree of the given
- * directory */
+ * directory. If any of its ancestor directory entries are not
+ * expanded, then they are expanded as well (mirroring
+ * dirtree_entry_expand( )'s behavior for ancestors -- otherwise a
+ * stale/incorrect ancestor cache entry would never get corrected by
+ * this path, only by dirtree_entry_expand( )'s explicit ancestor walk) */
 void
 dirtree_entry_expand_recursive( GNode *dnode )
 {
+	GNode *up_node;
+
 	if (!dnode)
 		return;
 
@@ -414,6 +420,7 @@ dirtree_entry_expand_recursive( GNode *dnode )
 #endif
 
 	block_colexp_handlers( );
+	gtk_tree_view_expand_to_path(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode);
 	gtk_tree_view_expand_row(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode, TRUE);
 	unblock_colexp_handlers( );
 
@@ -422,6 +429,15 @@ dirtree_entry_expand_recursive( GNode *dnode )
 	 * done once here rather than paying for a live GTK query on every
 	 * future read of dirtree_entry_expanded( ) for these directories */
 	dirtree_mark_subtree_expanded( dnode );
+
+	/* Also mirror dirtree_entry_expand( )'s ancestor walk, so a
+	 * previously wrong/stale cache entry on an ancestor gets corrected
+	 * here too, not only via a plain (non-recursive) expand */
+	up_node = dnode->parent;
+	while (NODE_IS_DIR(up_node)) {
+		DIR_NODE_DESC(up_node)->tree_row_expanded = TRUE;
+		up_node = up_node->parent;
+	}
 }
 
 
