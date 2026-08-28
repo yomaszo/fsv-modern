@@ -190,12 +190,30 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		scale = gtk_widget_get_scale_factor(gl_area_w);
 		x = x * scale;
 		y = y * scale;
-		if (!camera_moving( ) && !gtk_events_pending( )) {
+		/* With GDK_POINTER_MOTION_HINT_MASK set on this widget (see
+		 * gui_gl_area_add( )), GDK coalesces rapid motion events and
+		 * only sends a new one once we ask for it below via
+		 * gdk_event_request_motions( ) -- this is the standard GTK3
+		 * idiom for smooth click-dragging without either flooding the
+		 * event queue (processing every raw hardware sample) or
+		 * dropping events outright (which is what a prior, since-
+		 * removed !gtk_events_pending( ) check here used to do -- see
+		 * git history). */
+		if (!camera_moving( )) {
 			if (btn2) {
-				/* Dolly the camera */
-				gui_cursor( gl_area_w, GDK_DOUBLE_ARROW );
+				/* Tilt the camera (pitch only -- theta/heading is
+				 * left unchanged, unlike the Ctrl+drag revolve below).
+				 * The max/min tilt clamp is already enforced by
+				 * camera_revolve( ) itself (camera->phi is clamped to
+				 * [1.0, 90.0] there), so there's nothing extra to do
+				 * here to keep the camera from ending up upside-down
+				 * or looking from directly underneath. Scroll-wheel
+				 * dolly (see GDK_SCROLL below) already covers zooming,
+				 * so repurposing this drag from dolly to tilt doesn't
+				 * remove any existing capability. */
+				gui_cursor( gl_area_w, GDK_SB_V_DOUBLE_ARROW );
 				dy = MOUSE_SENSITIVITY * (y - prev_y);
-				camera_dolly( - dy );
+				camera_revolve( 0.0, dy );
 				indicated_node = NULL;
 			}
 			else if (ctrl_key && btn1) {
@@ -231,6 +249,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 			prev_x = x;
 			prev_y = y;
 		}
+		gdk_event_request_motions( (GdkEventMotion *)event );
 		break;
 
 		case GDK_LEAVE_NOTIFY:

@@ -620,6 +620,7 @@ gui_gl_area_add( GtkWidget *parent_w )
 	gl_area_w = ogl_widget_new( );
 	bitmask |= GDK_EXPOSURE_MASK;
 	bitmask |= GDK_POINTER_MOTION_MASK;
+	bitmask |= GDK_POINTER_MOTION_HINT_MASK;
 	bitmask |= GDK_BUTTON_MOTION_MASK;
 	bitmask |= GDK_BUTTON1_MOTION_MASK;
 	bitmask |= GDK_BUTTON2_MOTION_MASK;
