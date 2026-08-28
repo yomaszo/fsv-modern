@@ -74,7 +74,6 @@ dirtree_select_cb(GtkTreeSelection *selection, gpointer data)
 	GNode *dnode = NULL;
 	GtkTreeIter iter;
 	GtkTreeModel *model;
-	//int row;
 
 	/* If About presentation is up, end it */
 	about( ABOUT_END );
@@ -86,64 +85,71 @@ dirtree_select_cb(GtkTreeSelection *selection, gpointer data)
 		gtk_tree_model_get(model, &iter, DIRTREE_NODE_COLUMN, &dnode, -1);
 		if (!dnode)
 			return;
-		if (dirtree_entry_expanded(dnode) || !dirtree_entry_has_subdir(dnode)) {
-			camera_look_at( dnode );
-			g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
-			return;
-		}
+		/* Selecting a directory in the sidebar always navigates the
+		 * camera to it now -- previously this only happened if the
+		 * directory was already expanded (or had no subdirectories),
+		 * otherwise the click just selected/highlighted it without
+		 * moving the camera. Mirrors filelist_select_cb( )'s behavior
+		 * for the file list, which has always done this unconditionally.
+		 * camera_look_at( ) handles a collapsed target fine on its own
+		 * (it expands the necessary ancestor chain itself -- see
+		 * camera_look_at_full( ) -- and updates the current node, file
+		 * list, and status bar once the pan completes, via
+		 * post_pan_end( ) -> filelist_show_entry( ) -> dirtree_entry_show( )). */
+		camera_look_at( dnode );
 		geometry_highlight_node(dnode, FALSE);
 		window_statusbar(SB_RIGHT, node_absname(dnode));
-		if (dnode != dirtree_current_dnode) {
-			filelist_populate( dnode );
-			dirtree_current_dnode = dnode;
-		}
+		g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
 	}
-#if 0
-	gtk_clist_get_selection_info( GTK_CLIST(ctree_w), ev_button->x, ev_button->y, &row, NULL );
-	if (row < 0)
+}
+
+
+/* Callback for a right-click (secondary button) on the directory tree
+ * area: selects the row under the pointer -- with dirtree_select_cb( )
+ * blocked, since a right-click should only highlight and bring up the
+ * context menu (mirroring the 3D view's right-click behavior in
+ * viewport_cb( )), not also move the camera there the way a left click
+ * now does (see dirtree_select_cb( )) -- then brings up the same
+ * context-sensitive menu already used in the 3D view and file list;
+ * see context_menu( ) in dialog.c */
+static gboolean
+dirtree_button_press_cb(GtkWidget *tree_w, GdkEventButton *ev_button, gpointer data)
+{
+	GtkTreeSelection *select;
+	GtkTreePath *path;
+	GtkTreeModel *model;
+	GtkTreeIter iter;
+	GNode *dnode;
+
+	if (globals.fsv_mode == FSV_SPLASH)
 		return FALSE;
 
-	dnode = (GNode *)gtk_clist_get_row_data( GTK_CLIST(ctree_w), row );
-	if (dnode == NULL)
+	if (ev_button->button != 3)
 		return FALSE;
 
-	/* A single-click from button 1 highlights the node, shows the
-	 * name, and updates the file list if necessary. (and also selects
-	 * the row, but GTK+ does that automatically for us) */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_BUTTON_PRESS)) {
-		geometry_highlight_node( dnode, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( dnode ) );
-		if (dnode != dirtree_current_dnode)
-			filelist_populate( dnode );
-		dirtree_current_dnode = dnode;
+	if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(tree_w), (gint)ev_button->x, (gint)ev_button->y, &path, NULL, NULL, NULL))
+		return FALSE;
+
+	model = gtk_tree_view_get_model(GTK_TREE_VIEW(tree_w));
+	if (!gtk_tree_model_get_iter(model, &iter, path)) {
+		gtk_tree_path_free(path);
 		return FALSE;
 	}
+	gtk_tree_model_get(model, &iter, DIRTREE_NODE_COLUMN, &dnode, -1);
 
-	/* A double-click from button 1 gets the camera moving */
-	if ((ev_button->button == 1) && (ev_button->type == GDK_2BUTTON_PRESS)) {
-		camera_look_at( dnode );
-		/* Preempt the forthcoming tree expand/collapse
-		 * (the standard action spawned by a double-click) */
-		gtk_signal_emit_stop_by_name( GTK_OBJECT(ctree_w), "button_press_event" );
-		return TRUE;
-	}
+	select = gtk_tree_view_get_selection(GTK_TREE_VIEW(tree_w));
+	g_signal_handlers_block_by_func(G_OBJECT(select), G_CALLBACK(dirtree_select_cb), NULL);
+	gtk_tree_view_set_cursor(GTK_TREE_VIEW(tree_w), path, NULL, FALSE);
+	g_signal_handlers_unblock_by_func(G_OBJECT(select), G_CALLBACK(dirtree_select_cb), NULL);
+	gtk_tree_path_free(path);
 
-	/* A click from button 3 selects the row, highlights the node,
-	 * shows the name, updates the file list if necessary, and brings
-	 * up a context-sensitive menu */
-	if (ev_button->button == 3) {
-		gtk_clist_select_row( GTK_CLIST(ctree_w), row, 0 );
-		geometry_highlight_node( dnode, FALSE );
-		window_statusbar( SB_RIGHT, node_absname( dnode ) );
-		if (dnode != dirtree_current_dnode)
-			filelist_populate( dnode );
-		dirtree_current_dnode = dnode;
+	if (dnode) {
+		geometry_highlight_node(dnode, FALSE);
+		window_statusbar(SB_RIGHT, node_absname(dnode));
 		context_menu( dnode );
-		return FALSE;
 	}
 
-	return FALSE;
-#endif
+	return TRUE;
 }
 
 
@@ -215,6 +221,7 @@ dirtree_pass_widget( GtkWidget *tree_w )
 	g_signal_connect(G_OBJECT(select), "changed", G_CALLBACK(dirtree_select_cb), NULL );
 	g_signal_connect( G_OBJECT(dir_tree_w), "row_collapsed", G_CALLBACK(dirtree_collapse_cb), NULL );
 	g_signal_connect( G_OBJECT(dir_tree_w), "row_expanded", G_CALLBACK(dirtree_expand_cb), NULL );
+	g_signal_connect( G_OBJECT(dir_tree_w), "button_press_event", G_CALLBACK(dirtree_button_press_cb), NULL );
 
 	dirtree_icons_init( );
 }
