@@ -1190,15 +1190,29 @@ mapv_draw_recursive( GNode *dnode, int action )
 		 * close-up case this isn't meant to handle, so it's left to
 		 * the frustum test above instead. */
 		if (!culled) {
-			float cx[4] = { bbmin[0], bbmax[0], bbmin[0], bbmax[0] };
-			float cy[4] = { bbmin[1], bbmin[1], bbmax[1], bbmax[1] };
+			/* Sample both the bottom (z=0, this directory's floor)
+			 * and top (z=height, where its top face and any children
+			 * actually sit) of the box -- not just the bottom. A tall
+			 * directory box's footprint at its base can project to a
+			 * very different (and, at a steep tilt, much thinner or
+			 * off-screen) NDC region than its elevated top, which is
+			 * where the visible content actually is. Testing only the
+			 * base let this tiny/offscreen check wrongly cull boxes
+			 * whose top (and children) were still clearly on screen. */
+			float dnode_height = (float)dnode_gp->height;
+			float cx[8] = { bbmin[0], bbmax[0], bbmin[0], bbmax[0],
+					bbmin[0], bbmax[0], bbmin[0], bbmax[0] };
+			float cy[8] = { bbmin[1], bbmin[1], bbmax[1], bbmax[1],
+					bbmin[1], bbmin[1], bbmax[1], bbmax[1] };
+			float cz[8] = { 0.0f, 0.0f, 0.0f, 0.0f,
+					dnode_height, dnode_height, dnode_height, dnode_height };
 			float ndc_x0 = 1.0e9f, ndc_x1 = -1.0e9f;
 			float ndc_y0 = 1.0e9f, ndc_y1 = -1.0e9f;
 			boolean all_in_front = TRUE;
 			int corner;
 
-			for (corner = 0; corner < 4; corner++) {
-				vec4 p = { cx[corner], cy[corner], 0.0f, 1.0f };
+			for (corner = 0; corner < 8; corner++) {
+				vec4 p = { cx[corner], cy[corner], cz[corner], 1.0f };
 				vec4 clip;
 
 				glm_mat4_mulv(mvp, p, clip);
@@ -1213,9 +1227,23 @@ mapv_draw_recursive( GNode *dnode, int action )
 			}
 
 			if (all_in_front) {
-				/* Genuinely tiny on screen */
-				boolean tiny = ((ndc_x1 - ndc_x0) < MAPV_GEOMETRY_MIN_NDC_SIZE) &&
-					       ((ndc_y1 - ndc_y0) < MAPV_GEOMETRY_MIN_NDC_SIZE);
+				/* Genuinely tiny on screen. Checked with OR (not AND)
+				 * plus an area check, not just width-and-height both
+				 * being small: at a shallow/tilted viewing angle, a
+				 * box can foreshorten to paper-thin in one dimension
+				 * (e.g. height) while remaining wide in the other, and
+				 * an AND-based test lets that slip through uncculled
+				 * even though it's projecting a near-invisible sliver.
+				 * The thresholds here are deliberately much smaller
+				 * than MAPV_GEOMETRY_MIN_NDC_SIZE (0.02) precisely
+				 * because OR triggers far more easily than AND did --
+				 * reusing 0.02 here would cull much more aggressively
+				 * than intended and risk cutting genuinely visible
+				 * content, not just slivers. */
+				float ndc_w = ndc_x1 - ndc_x0;
+				float ndc_h = ndc_y1 - ndc_y0;
+				boolean tiny = (ndc_w < 0.0015f) || (ndc_h < 0.0015f) ||
+					       ((ndc_w * ndc_h) < 0.00001f);
 				/* Entirely outside the [-1,1] NDC screen rectangle,
 				 * regardless of size -- catches large-footprint
 				 * directories sitting well off to the side, which the
