@@ -40,6 +40,8 @@ typedef struct FsvGlState {
 	GLint normal_location;
 	GLint color_location;
 	GLint lightning_enabled_location;
+	GLint vcolor_location;
+	GLint use_vertex_color_location;
 
 	// Phong lightning parameters
 	GLint ambient_location;

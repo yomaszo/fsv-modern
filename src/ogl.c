@@ -156,10 +156,12 @@ ogl_init( void )
 
 	gl.color_location = glGetUniformLocation(gl.program, "color");
 	gl.lightning_enabled_location = glGetUniformLocation(gl.program, "lightning_enabled");
+	gl.use_vertex_color_location = glGetUniformLocation(gl.program, "use_vertex_color");
 
 	/* get the location of the "position" and "color" attributes */
 	gl.position_location = glGetAttribLocation(gl.program, "position");
 	gl.normal_location = glGetAttribLocation(gl.program, "normal");
+	gl.vcolor_location = glGetAttribLocation(gl.program, "vcolor");
 
 
 	// Shader programs for the splash and about screens
@@ -202,6 +204,7 @@ ogl_init( void )
 	glUniform1f(gl.diffuse_location, light_diffuse[0]);
 	glUniform1f(gl.specular_location, light_specular[0]);
 	glUniform4fv(gl.light_pos_location, 1, light_position);
+	glUniform1i(gl.use_vertex_color_location, 0);
 	glUseProgram(0);
 	glUseProgram(aboutGL.program);
 	glUniform1f(aboutGL.ambient_location, light_ambient[0]);

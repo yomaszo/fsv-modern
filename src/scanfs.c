@@ -352,6 +352,18 @@ scanfs( const char *dir )
 	/* Let the disk thrashing begin */
 	process_dir( root_dir, root_dnode );
 
+	/* root_dnode's tree row was created (in dirtree_entry_new( ), called
+	 * above) marked expanded in the tree_row_expanded cache, but its
+	 * children didn't exist in the GTK tree store yet at that point (they
+	 * were only just added by process_dir( ), above) -- and separately,
+	 * gui_tree_node_add( )'s own "expanded" parameter is not actually
+	 * wired up to anything in GTK. Net effect: without this call, the
+	 * root directory's row would show collapsed in the sidebar even
+	 * though the cache (and MapV, which reads the same cache) already
+	 * consider it expanded -- exactly the mismatch this fixes, now that
+	 * its children are actually there to expand into. */
+	dirtree_entry_expand( root_dnode );
+
 	/* GUI stuff again */
 	g_source_remove( handler_id );
 	window_statusbar( SB_RIGHT, "" );
