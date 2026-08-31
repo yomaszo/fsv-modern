@@ -333,6 +333,26 @@ unblock_colexp_handlers( void )
 }
 
 
+/* Helper function for dirtree_entry_collapse_recursive( ): marks the
+ * cached expanded flag FALSE for dnode and its entire directory
+ * subtree, mirroring dirtree_mark_subtree_expanded( ) below but for the
+ * collapse direction */
+static void
+dirtree_mark_subtree_collapsed( GNode *dnode )
+{
+	GNode *node;
+
+	DIR_NODE_DESC(dnode)->tree_row_expanded = FALSE;
+
+	node = dnode->children;
+	while (node != NULL) {
+		if (NODE_IS_DIR(node))
+			dirtree_mark_subtree_collapsed( node );
+		node = node->next;
+	}
+}
+
+
 /* Recursively collapses the directory tree entry of the given directory */
 void
 dirtree_entry_collapse_recursive( GNode *dnode )
@@ -346,10 +366,19 @@ dirtree_entry_collapse_recursive( GNode *dnode )
 	gtk_tree_view_collapse_row(GTK_TREE_VIEW(dir_tree_w), DIR_NODE_DESC(dnode)->tnode);
 	unblock_colexp_handlers( );
 
-	/* Collapsing a row in GTK does not clear its descendants' own
-	 * internal expanded state (they simply become invisible) -- only
-	 * this directory's own row-expanded state actually changed */
-	DIR_NODE_DESC(dnode)->tree_row_expanded = FALSE;
+	/* Collapsing a row in GTK only hides its descendants -- it does not
+	 * touch their own row-expanded state, in GTK or in this cache. If a
+	 * subtree was previously opened with dirtree_entry_expand_recursive( )
+	 * ("expand all"), its descendants' cached tree_row_expanded flags
+	 * are still TRUE at this point. Left uncorrected, re-expanding an
+	 * ancestor later (a plain, non-recursive expand) would leave those
+	 * descendants visually collapsed (GTK never re-opened their rows)
+	 * while dirtree_entry_expanded( ) still reports them as expanded --
+	 * e.g. the right-click menu offering "Collapse" for a directory that
+	 * looks (and, in GTK, is) collapsed. So mirror the collapse over the
+	 * whole subtree here, the same way dirtree_entry_expand_recursive( )
+	 * mirrors its own "expand all" over the whole subtree. */
+	dirtree_mark_subtree_collapsed( dnode );
 }
 
 

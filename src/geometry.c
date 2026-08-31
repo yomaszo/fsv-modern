@@ -61,6 +61,15 @@ typedef struct VertexPos {
 	GLfloat position[3];
 } VertexPos;
 
+// Vertex struct carrying its own per-vertex color, for batched rendering
+// (see mapv_batch_* below) where many differently-colored nodes need to
+// be merged into a handful of draw calls instead of one draw call each.
+typedef struct ColorVertex {
+	GLfloat position[3];
+	GLfloat normal[3];
+	GLfloat color[3];
+} ColorVertex;
+
 
 // Print the legacy and modern OpenGL projection and modelview matrices.
 // which = 0: both modelview and projection matrices
@@ -894,6 +903,231 @@ mapv_camera_pan_finished( void )
 }
 
 
+/* Batching for MapV node geometry -- RENDERMODE_RENDER only. Accumulates
+ * vertices/indices for many nodes and uploads+draws them in a handful of
+ * large calls instead of one small draw call per node, which is what
+ * made MapV frame time scale so badly with the number of visible nodes
+ * (measured 2026-08-29: FPS dropped from 60 to 27-40 with many nodes
+ * visible, recovering to 60 once zoomed into a small area -- tracking
+ * visible node count, not camera direction). RENDERMODE_SELECT
+ * (node-picking) keeps using the original one-draw-call-per-node path
+ * below unchanged: it only runs once per click/hover, so call count
+ * doesn't matter there, and it needs each node isolated with its own
+ * ID-encoded, unlit color anyway. */
+#define MAPV_BATCH_MAX_NODES	3276	/* 3276*20 verts stays under 65536, the GLushort index limit */
+static ColorVertex *mapv_batch_verts = NULL;
+static GLushort *mapv_batch_idx = NULL;
+static size_t mapv_batch_vert_cnt = 0;
+static size_t mapv_batch_idx_cnt = 0;
+static GLuint mapv_batch_vbo, mapv_batch_ebo;
+
+/* gl.modelview as it stood right before the traversal that's filling the
+ * batch began (i.e. the plain camera view matrix, with none of the
+ * per-node translate/scale steps mapv_draw_recursive( ) applies while
+ * descending). Everything in the batch gets baked into THIS frame at
+ * add-time (see mapv_batch_add_node( )), because the batch is only
+ * flushed (drawn) once, after the whole traversal returns -- by which
+ * point gl.modelview has been restored to exactly this value, so a
+ * single draw call under it renders every node at its correct nested
+ * position. mapv_batch_root_modelview_inv is its inverse, precomputed
+ * once per frame since inverting it per-node would be wasted work. */
+static mat4 mapv_batch_root_modelview;
+static mat4 mapv_batch_root_modelview_inv;
+
+/* Call once per frame, before any mapv_gldraw_node( ) calls, to reset
+ * the batch (allocating its backing storage on first use) */
+static void
+mapv_batch_begin( void )
+{
+	if (mapv_batch_verts == NULL) {
+		mapv_batch_verts = NEW_ARRAY(ColorVertex, MAPV_BATCH_MAX_NODES * 20);
+		mapv_batch_idx = NEW_ARRAY(GLushort, MAPV_BATCH_MAX_NODES * 30);
+	}
+	mapv_batch_vert_cnt = 0;
+	mapv_batch_idx_cnt = 0;
+	glm_mat4_copy(gl.modelview, mapv_batch_root_modelview);
+	glm_mat4_inv(mapv_batch_root_modelview, mapv_batch_root_modelview_inv);
+}
+
+/* Uploads and draws everything accumulated in the batch so far (in one
+ * draw call), then resets it. Called whenever the batch is full, and
+ * once more at the end of the frame to flush whatever's left over */
+static void
+mapv_batch_flush( void )
+{
+	if (mapv_batch_vert_cnt == 0)
+		return;
+
+	if (!mapv_batch_vbo) {
+		glGenBuffers(1, &mapv_batch_vbo);
+		glGenBuffers(1, &mapv_batch_ebo);
+	}
+
+	glBindBuffer(GL_ARRAY_BUFFER, mapv_batch_vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * mapv_batch_vert_cnt, mapv_batch_verts, GL_STREAM_DRAW);
+
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mapv_batch_ebo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * mapv_batch_idx_cnt, mapv_batch_idx, GL_STREAM_DRAW);
+
+	glEnableVertexAttribArray(gl.position_location);
+	glVertexAttribPointer(gl.position_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, position));
+	glEnableVertexAttribArray(gl.normal_location);
+	glVertexAttribPointer(gl.normal_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, normal));
+	glEnableVertexAttribArray(gl.vcolor_location);
+	glVertexAttribPointer(gl.vcolor_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, color));
+
+	/* The batch's vertices were baked into mapv_batch_root_modelview's
+	 * frame at add-time (see mapv_batch_add_node( )), NOT whatever
+	 * gl.modelview happens to be right now -- this flush can be forced
+	 * mid-traversal if the batch fills up (MAPV_BATCH_MAX_NODES), at
+	 * which point gl.modelview is some descendant's frame, not root's.
+	 * So upload root's own mvp/modelview/normal_matrix just for this
+	 * draw call, then restore whatever was active before via
+	 * ogl_upload_matrices( ), since later draws in the traversal (folder
+	 * outlines, sibling nodes not yet batched) still need it to reflect
+	 * gl.modelview as it currently stands, not root. */
+	mat4 root_mvp;
+	mat3 root_normal_matrix;
+	glm_mat4_mul(gl.projection, mapv_batch_root_modelview, root_mvp);
+	glm_mat4_pick3(mapv_batch_root_modelview, root_normal_matrix);
+	glm_mat3_inv(root_normal_matrix, root_normal_matrix);
+	glm_mat3_transpose(root_normal_matrix);
+
+	glUseProgram(gl.program);
+	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)mapv_batch_root_modelview);
+	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
+	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
+	glUniform1i(gl.lightning_enabled_location, 1);
+	glUniform1i(gl.use_vertex_color_location, 1);
+
+	glDrawElements(GL_TRIANGLES, mapv_batch_idx_cnt, GL_UNSIGNED_SHORT, 0);
+
+	glUniform1i(gl.use_vertex_color_location, 0);
+	glUseProgram(0);
+
+	/* Restore modelview/mvp/normal_matrix to reflect gl.modelview as the
+	 * traversal in progress currently has it (a no-op if this flush
+	 * happened at the natural end of the traversal, where gl.modelview
+	 * had already been restored to root; necessary if it was forced
+	 * mid-traversal by the batch filling up). */
+	ogl_upload_matrices(FALSE);
+
+	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * mapv_batch_vert_cnt, NULL, GL_STREAM_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+	mapv_batch_vert_cnt = 0;
+	mapv_batch_idx_cnt = 0;
+}
+
+/* Appends node's 20-vertex/30-index box geometry (with its lit,
+ * highlight-adjusted color baked into each vertex) to the batch,
+ * flushing first if there isn't room left for it */
+static void
+mapv_batch_add_node( GNode *node )
+{
+	MapVGeomParams *gparams;
+	XYZvec dims;
+	XYvec offset, normal;
+	double normal_z_nx, normal_z_ny;
+	double a, b, k;
+	GLfloat color[3];
+	size_t base;
+	int i;
+	static const GLushort elements[] = {
+	    0,	1,  2,	2,  1,	3,
+	    4,	5,  6,	6,  5,	7,
+	    8,	9,  10, 10, 9,	11,
+	    12, 13, 14, 14, 13, 15,
+	    16, 17, 18, 18, 17, 19
+	};
+
+	if ((mapv_batch_vert_cnt + 20) > (size_t)(MAPV_BATCH_MAX_NODES * 20))
+		mapv_batch_flush( );
+
+	/* Same color logic as node_set_color( )'s RENDERMODE_RENDER branch */
+	memcpy(color, NODE_DESC(node)->color, 3 * sizeof(GLfloat));
+	if (NODE_DESC(node)->id == highlight_node_id) {
+		for (i = 0; i < 3; i++)
+			color[i] *= 1.3f;
+	}
+
+	dims.x = MAPV_NODE_WIDTH(node);
+	dims.y = MAPV_NODE_DEPTH(node);
+	dims.z = MAPV_GEOM_PARAMS(node)->height;
+
+	k = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	offset.x = MIN(dims.z, k * dims.x);
+	offset.y = MIN(dims.z, k * dims.y);
+	a = sqrt( SQR(offset.x) + SQR(dims.z) );
+	b = sqrt( SQR(offset.y) + SQR(dims.z) );
+	normal.x = dims.z / a;
+	normal.y = dims.z / b;
+	normal_z_nx = offset.x / a;
+	normal_z_ny = offset.y / b;
+
+	gparams = MAPV_GEOM_PARAMS(node);
+
+	base = mapv_batch_vert_cnt;
+
+	/* This node's transform relative to mapv_batch_root_modelview --
+	 * i.e. just its own slice of the translate/scale stack
+	 * mapv_draw_recursive( ) accumulated while descending to reach it,
+	 * with the shared root frame factored back out. Baking this into
+	 * each vertex now (position AND normal, the latter needing the
+	 * usual inverse-transpose since the stack includes non-uniform Z
+	 * scaling for expand/collapse animation) is what lets every node's
+	 * geometry end up correctly placed after the batch is drawn once,
+	 * at the end, under mapv_batch_root_modelview alone. */
+	mat4 local_accum;
+	mat3 normal_matrix_local;
+	glm_mat4_mul(mapv_batch_root_modelview_inv, gl.modelview, local_accum);
+	glm_mat4_pick3(local_accum, normal_matrix_local);
+	glm_mat3_inv(normal_matrix_local, normal_matrix_local);
+	glm_mat3_transpose(normal_matrix_local);
+
+#define CV(px, py, pz, nx, ny, nz) do { \
+	vec4 _p = { (float)(px), (float)(py), (float)(pz), 1.0f }; \
+	vec4 _tp; \
+	vec3 _n = { (float)(nx), (float)(ny), (float)(nz) }; \
+	vec3 _tn; \
+	glm_mat4_mulv(local_accum, _p, _tp); \
+	glm_mat3_mulv(normal_matrix_local, _n, _tn); \
+	mapv_batch_verts[mapv_batch_vert_cnt++] = (ColorVertex){{_tp[0], _tp[1], _tp[2]}, {_tn[0], _tn[1], _tn[2]}, {color[0], color[1], color[2]}}; \
+} while (0)
+
+	CV(gparams->c0.x, gparams->c1.y, 0.0, 0.0, normal.y, normal_z_ny); /* Rear face */
+	CV(gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height, 0.0, normal.y, normal_z_ny);
+	CV(gparams->c1.x, gparams->c1.y, 0.0, 0.0, normal.y, normal_z_ny);
+	CV(gparams->c1.x - offset.x, gparams->c1.y - offset.y, gparams->height, 0.0, normal.y, normal_z_ny);
+	CV(gparams->c1.x, gparams->c1.y, 0.0, normal.x, 0.0, normal_z_nx); /* Right face */
+	CV(gparams->c1.x - offset.x, gparams->c1.y - offset.y, gparams->height, normal.x, 0.0, normal_z_nx);
+	CV(gparams->c1.x, gparams->c0.y, 0.0, normal.x, 0.0, normal_z_nx);
+	CV(gparams->c1.x - offset.x, gparams->c0.y + offset.y, gparams->height, normal.x, 0.0, normal_z_nx);
+	CV(gparams->c1.x, gparams->c0.y, 0.0, 0.0, -normal.y, normal_z_ny); /* Front face */
+	CV(gparams->c1.x - offset.x, gparams->c0.y + offset.y, gparams->height, 0.0, -normal.y, normal_z_ny);
+	CV(gparams->c0.x, gparams->c0.y, 0.0, 0.0, -normal.y, normal_z_ny);
+	CV(gparams->c0.x + offset.x, gparams->c0.y + offset.y, gparams->height, 0.0, -normal.y, normal_z_ny);
+	CV(gparams->c0.x, gparams->c0.y, 0.0, -normal.x, 0.0, normal_z_nx); /* Left face */
+	CV(gparams->c0.x + offset.x, gparams->c0.y + offset.y, gparams->height, -normal.x, 0.0, normal_z_nx);
+	CV(gparams->c0.x, gparams->c1.y, 0.0, -normal.x, 0.0, normal_z_nx);
+	CV(gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height, -normal.x, 0.0, normal_z_nx);
+	/* Top face */
+	CV(gparams->c0.x + offset.x, gparams->c0.y + offset.y, gparams->height, 0.0f, 0.0f, 1.0f);
+	CV(gparams->c1.x - offset.x, gparams->c0.y + offset.y, gparams->height, 0.0f, 0.0f, 1.0f);
+	CV(gparams->c0.x + offset.x, gparams->c1.y - offset.y, gparams->height, 0.0f, 0.0f, 1.0f);
+	CV(gparams->c1.x - offset.x, gparams->c1.y - offset.y, gparams->height, 0.0f, 0.0f, 1.0f);
+
+#undef CV
+
+	for (i = 0; i < 30; i++)
+		mapv_batch_idx[mapv_batch_idx_cnt++] = (GLushort)(base + elements[i]);
+}
+
+
 /* Draws a MapV node */
 static void
 mapv_gldraw_node( GNode *node )
@@ -903,6 +1137,11 @@ mapv_gldraw_node( GNode *node )
 	XYvec offset, normal;
 	double normal_z_nx, normal_z_ny;
 	double a, b, k;
+
+	if (gl.render_mode == RENDERMODE_RENDER) {
+		mapv_batch_add_node( node );
+		return;
+	}
 
 	/* Dimensions of node */
 	dims.x = MAPV_NODE_WIDTH(node);
@@ -1434,7 +1673,9 @@ mapv_draw( boolean high_detail )
 {
 	/* Draw low-detail geometry */
 
+	mapv_batch_begin( );
 	mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY );
+	mapv_batch_flush( );
 
 	if (fstree_low_draw_stage <= 1)
 		++fstree_low_draw_stage;

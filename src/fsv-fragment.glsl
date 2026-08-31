@@ -5,6 +5,7 @@
 in vec3 fragPos;
 in vec3 fragNormal;
 in vec4 lightPos;
+in vec3 fragVColor;
 
 out vec4 outputColor;
 
@@ -13,10 +14,13 @@ uniform float ambient;
 uniform float diffuse;
 uniform float specular;
 uniform bool lightning_enabled;
+uniform bool use_vertex_color;
 
 void main() {
+  vec4 base_color = use_vertex_color ? vec4(fragVColor, 1.0) : color;
+
   if (!lightning_enabled) {
-    outputColor = color;
+    outputColor = base_color;
     return;
   }
 
@@ -42,7 +46,7 @@ void main() {
   vec3 spec_light = specular * spec * light_color;
 
   // Final color from lightning calculation
-  outputColor = vec4(((ambient_light + diffuse_light + spec_light) * color.rgb), color.a);
+  outputColor = vec4(((ambient_light + diffuse_light + spec_light) * base_color.rgb), base_color.a);
 
 
   // For debugging, uncomment this. Also set fragNormal to flat in both vertex
