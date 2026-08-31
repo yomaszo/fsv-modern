@@ -1709,7 +1709,22 @@ mapv_draw( boolean high_detail )
 #define TREEV_CURVE_GRANULARITY		5.0
 #define TREEV_PLATFORM_HEIGHT		158.2
 #define TREEV_PLATFORM_SPACING_WIDTH	512.0
+/* Leaf height scales with size via cube root, not sqrt() (the original
+ * approach) or log() (tried and rejected -- it compressed the huge
+ * range real directories span so much that a 700MB, a 3GB, and a 19GB
+ * directory ended up almost the same height). sqrt() differentiates
+ * well but makes even a single large file dwarf its own footprint
+ * (TREEV_LEAF_NODE_EDGE) many times over; cube root is a middle ground,
+ * still clearly showing size differences across orders of magnitude
+ * while growing slowly enough that TREEV_LEAF_MAX_HEIGHT only needs to
+ * step in for genuinely extreme outliers. TREEV_LEAF_MIN_HEIGHT exists
+ * because an empty or near-empty directory would otherwise come out
+ * almost paper-flat -- thin enough that its collapsed "X" marker (see
+ * treev_gldraw_leaf( )), which is a fixed size regardless of the box's
+ * own height, visibly sticks out above/through it. */
 #define TREEV_LEAF_HEIGHT_MULTIPLIER	1.0
+#define TREEV_LEAF_MIN_HEIGHT		(0.25 * TREEV_LEAF_NODE_EDGE)
+#define TREEV_LEAF_MAX_HEIGHT		(16.0 * TREEV_LEAF_NODE_EDGE)
 #define TREEV_LEAF_PADDING		(0.125 * TREEV_LEAF_NODE_EDGE)
 #define TREEV_PLATFORM_PADDING		(0.5 * TREEV_PLATFORM_SPACING_WIDTH)
 
@@ -2176,7 +2191,9 @@ treev_init_recursive( GNode *dnode )
 			TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width = TREEV_MIN_ARC_WIDTH;
 			treev_init_recursive( node );
 		}
-		TREEV_GEOM_PARAMS(node)->leaf.height = sqrt( (double)size ) * TREEV_LEAF_HEIGHT_MULTIPLIER;
+		TREEV_GEOM_PARAMS(node)->leaf.height = CLAMP(
+			TREEV_LEAF_HEIGHT_MULTIPLIER * cbrt( (double)size ),
+			TREEV_LEAF_MIN_HEIGHT, TREEV_LEAF_MAX_HEIGHT);
 		node = node->next;
 	}
 }
