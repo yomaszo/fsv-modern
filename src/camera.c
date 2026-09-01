@@ -951,8 +951,30 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 
 	/* Construct desired camera state */
 
-	if (geometry_treev_is_leaf( node )) {
-		GNode *platform_node = geometry_treev_platform_node( node );
+	/* A directory whose tree-widget row was just collapsed (see
+	 * dirtree_entry_collapse_recursive( ), called at the very start of
+	 * colexp( )) but whose 3D deployment value hasn't animated down yet
+	 * still measures as a platform per geometry_treev_is_leaf( ) (which
+	 * goes by deployment, since that's what's actually drawn moment to
+	 * moment) -- but the camera here should target where the directory
+	 * is headed (a leaf on its parent's platform), not where it
+	 * currently, fleetingly, still sits as a full-size platform. Without
+	 * this, collapsing a selected directory never re-targets the camera
+	 * once the collapse finishes and the directory has moved to its
+	 * leaf position -- the one look_at call here already fired, aimed
+	 * at the soon-to-be-gone platform. Expanding doesn't have the
+	 * mirror-image problem: dirtree_entry_expanded( ) flips TRUE
+	 * immediately, so geometry_treev_is_leaf( ) already reports "not a
+	 * leaf" (i.e. "platform") right away, matching the correct target.
+	 * node->parent is used directly (rather than
+	 * geometry_treev_platform_node( ), which has the same instantaneous
+	 * blind spot) since a node being collapsed here must have had an
+	 * already-expanded, still-intact parent platform to be reachable at
+	 * all. */
+	boolean collapsing_selected_dir = NODE_IS_DIR(node) && !dirtree_entry_expanded( node ) && !geometry_treev_is_leaf( node );
+
+	if (geometry_treev_is_leaf( node ) || collapsing_selected_dir) {
+		GNode *platform_node = collapsing_selected_dir ? node->parent : geometry_treev_platform_node( node );
 
 		/* Target point */
 		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
