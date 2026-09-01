@@ -2272,6 +2272,208 @@ treev_queue_rearrange( GNode *dnode )
 }
 
 
+/* Batching for TreeV leaf geometry -- RENDERMODE_RENDER only, mirroring
+ * mapv_batch_* above (see its comment for the full rationale: per-node
+ * draw calls made frame time scale badly with visible node count).
+ * RENDERMODE_SELECT (picking) keeps using treev_gldraw_leaf( )'s
+ * original one-draw-call-per-node path, unchanged.
+ *
+ * A full leaf (top face + 4 side faces) is 20 vertices/30 indices --
+ * the same count as a MapV node, purely by coincidence of geometry --
+ * so the same GLushort-index-range math applies. */
+#define TREEV_BATCH_MAX_NODES	3276	/* 3276*20 verts stays under 65536, the GLushort index limit */
+static ColorVertex *treev_batch_verts = NULL;
+static GLushort *treev_batch_idx = NULL;
+static size_t treev_batch_vert_cnt = 0;
+static size_t treev_batch_idx_cnt = 0;
+static GLuint treev_batch_vbo, treev_batch_ebo;
+
+/* gl.modelview as it stood right before the traversal filling the batch
+ * began -- see mapv_batch_root_modelview above for the full rationale.
+ * In TreeV, what accumulates in gl.modelview while descending is a
+ * rotate_z chain (each directory platform's own angular offset), plus,
+ * for a directory that's mid-expand/collapse, a scale/rotate/translate
+ * sequence around its leaf position -- all of which treev_batch_add_leaf( )
+ * bakes out per-node relative to this same shared root frame. */
+static mat4 treev_batch_root_modelview;
+static mat4 treev_batch_root_modelview_inv;
+
+/* Call once per frame, before any treev_gldraw_leaf( ) calls, to reset
+ * the batch (allocating its backing storage on first use) */
+static void
+treev_batch_begin( void )
+{
+	if (treev_batch_verts == NULL) {
+		treev_batch_verts = NEW_ARRAY(ColorVertex, TREEV_BATCH_MAX_NODES * 20);
+		treev_batch_idx = NEW_ARRAY(GLushort, TREEV_BATCH_MAX_NODES * 30);
+	}
+	treev_batch_vert_cnt = 0;
+	treev_batch_idx_cnt = 0;
+	glm_mat4_copy(gl.modelview, treev_batch_root_modelview);
+	glm_mat4_inv(treev_batch_root_modelview, treev_batch_root_modelview_inv);
+}
+
+/* Uploads and draws everything accumulated in the batch so far (in one
+ * draw call), then resets it. Called whenever the batch is full, and
+ * once more at the end of the frame to flush whatever's left over.
+ * Identical in structure to mapv_batch_flush( ) -- see its comment for
+ * why the root mvp/modelview/normal_matrix are uploaded explicitly
+ * here rather than trusting whatever's currently bound. */
+static void
+treev_batch_flush( void )
+{
+	if (treev_batch_vert_cnt == 0)
+		return;
+
+	if (!treev_batch_vbo) {
+		glGenBuffers(1, &treev_batch_vbo);
+		glGenBuffers(1, &treev_batch_ebo);
+	}
+
+	glBindBuffer(GL_ARRAY_BUFFER, treev_batch_vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt, treev_batch_verts, GL_STREAM_DRAW);
+
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, treev_batch_ebo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * treev_batch_idx_cnt, treev_batch_idx, GL_STREAM_DRAW);
+
+	glEnableVertexAttribArray(gl.position_location);
+	glVertexAttribPointer(gl.position_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, position));
+	glEnableVertexAttribArray(gl.normal_location);
+	glVertexAttribPointer(gl.normal_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, normal));
+	glEnableVertexAttribArray(gl.vcolor_location);
+	glVertexAttribPointer(gl.vcolor_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, color));
+
+	mat4 root_mvp;
+	mat3 root_normal_matrix;
+	glm_mat4_mul(gl.projection, treev_batch_root_modelview, root_mvp);
+	glm_mat4_pick3(treev_batch_root_modelview, root_normal_matrix);
+	glm_mat3_inv(root_normal_matrix, root_normal_matrix);
+	glm_mat3_transpose(root_normal_matrix);
+
+	glUseProgram(gl.program);
+	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)treev_batch_root_modelview);
+	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
+	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
+	glUniform1i(gl.lightning_enabled_location, 1);
+	glUniform1i(gl.use_vertex_color_location, 1);
+
+	glDrawElements(GL_TRIANGLES, treev_batch_idx_cnt, GL_UNSIGNED_SHORT, 0);
+
+	glUniform1i(gl.use_vertex_color_location, 0);
+	glUseProgram(0);
+
+	/* Restore modelview/mvp/normal_matrix to reflect gl.modelview as the
+	 * traversal in progress currently has it -- see mapv_batch_flush( ). */
+	ogl_upload_matrices(FALSE);
+
+	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt, NULL, GL_STREAM_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+	treev_batch_vert_cnt = 0;
+	treev_batch_idx_cnt = 0;
+}
+
+/* Appends a leaf's top face (always) and side faces (only if full_node)
+ * to the batch, with its lit/highlighted color baked into each vertex,
+ * flushing first if there isn't room left. corners[] are already in
+ * the leaf's own micro-rotated local frame (see treev_gldraw_leaf( )'s
+ * own corner rotation by leaf.theta) -- what's left to bake in here is
+ * just this node's slice of gl.modelview relative to the shared root
+ * frame, exactly as in mapv_batch_add_node( ). sin_theta/cos_theta are
+ * passed through (rather than re-derived from corners) since
+ * treev_gldraw_leaf( ) already has them for the side-face normals. */
+static void
+treev_batch_add_leaf( GNode *node, XYvec *corners, double z0, double z1,
+		       double sin_theta, double cos_theta, boolean full_node )
+{
+	GLfloat color[3];
+	size_t base;
+	int i;
+
+	if ((treev_batch_vert_cnt + 20) > (size_t)(TREEV_BATCH_MAX_NODES * 20))
+		treev_batch_flush( );
+
+	/* Same color logic as node_set_color( )'s RENDERMODE_RENDER branch */
+	memcpy(color, NODE_DESC(node)->color, 3 * sizeof(GLfloat));
+	if (NODE_DESC(node)->id == highlight_node_id) {
+		for (i = 0; i < 3; i++)
+			color[i] *= 1.3f;
+	}
+
+	mat4 local_accum;
+	mat3 normal_matrix_local;
+	glm_mat4_mul(treev_batch_root_modelview_inv, gl.modelview, local_accum);
+	glm_mat4_pick3(local_accum, normal_matrix_local);
+	glm_mat3_inv(normal_matrix_local, normal_matrix_local);
+	glm_mat3_transpose(normal_matrix_local);
+
+#define CV(px, py, pz, nx, ny, nz) do { \
+	vec4 _p = { (float)(px), (float)(py), (float)(pz), 1.0f }; \
+	vec4 _tp; \
+	vec3 _n = { (float)(nx), (float)(ny), (float)(nz) }; \
+	vec3 _tn; \
+	glm_mat4_mulv(local_accum, _p, _tp); \
+	glm_mat3_mulv(normal_matrix_local, _n, _tn); \
+	treev_batch_verts[treev_batch_vert_cnt++] = (ColorVertex){{_tp[0], _tp[1], _tp[2]}, {_tn[0], _tn[1], _tn[2]}, {color[0], color[1], color[2]}}; \
+} while (0)
+
+	base = treev_batch_vert_cnt;
+
+	/* Top face -- same strip order (0,1,3,2) as the immediate-mode path,
+	 * split here into 2 indexed triangles instead */
+	CV(corners[0].x, corners[0].y, z1, 0.0, 0.0, 1.0);
+	CV(corners[1].x, corners[1].y, z1, 0.0, 0.0, 1.0);
+	CV(corners[3].x, corners[3].y, z1, 0.0, 0.0, 1.0);
+	CV(corners[2].x, corners[2].y, z1, 0.0, 0.0, 1.0);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 0);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 1);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 2);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 2);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 1);
+	treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base + 3);
+
+	if (full_node) {
+		static const GLushort side_elems[] = {
+			0,  1,	2,  2,	1,  3,
+			4,  5,	6,  6,	5,  7,
+			8,  9,	10, 10, 9,  11,
+			12, 13, 14, 14, 13, 15
+		};
+		size_t base2 = treev_batch_vert_cnt;
+
+		/* Front */
+		CV(corners[0].x, corners[0].y, z1, sin_theta, -cos_theta, 0.0);
+		CV(corners[0].x, corners[0].y, z0, sin_theta, -cos_theta, 0.0);
+		CV(corners[1].x, corners[1].y, z1, sin_theta, -cos_theta, 0.0);
+		CV(corners[1].x, corners[1].y, z0, sin_theta, -cos_theta, 0.0);
+		/* Right */
+		CV(corners[1].x, corners[1].y, z1, cos_theta, sin_theta, 0.0);
+		CV(corners[1].x, corners[1].y, z0, cos_theta, sin_theta, 0.0);
+		CV(corners[2].x, corners[2].y, z1, cos_theta, sin_theta, 0.0);
+		CV(corners[2].x, corners[2].y, z0, cos_theta, sin_theta, 0.0);
+		/* Back */
+		CV(corners[2].x, corners[2].y, z1, -sin_theta, cos_theta, 0.0);
+		CV(corners[2].x, corners[2].y, z0, -sin_theta, cos_theta, 0.0);
+		CV(corners[3].x, corners[3].y, z1, -sin_theta, cos_theta, 0.0);
+		CV(corners[3].x, corners[3].y, z0, -sin_theta, cos_theta, 0.0);
+		/* Left */
+		CV(corners[3].x, corners[3].y, z1, -cos_theta, -sin_theta, 0.0);
+		CV(corners[3].x, corners[3].y, z0, -cos_theta, -sin_theta, 0.0);
+		CV(corners[0].x, corners[0].y, z1, -cos_theta, -sin_theta, 0.0);
+		CV(corners[0].x, corners[0].y, z0, -cos_theta, -sin_theta, 0.0);
+
+		for (i = 0; i < 24; i++)
+			treev_batch_idx[treev_batch_idx_cnt++] = (GLushort)(base2 + side_elems[i]);
+	}
+
+#undef CV
+}
+
+
 /* Draws a directory platform, with inner radius of r0 */
 static void
 treev_gldraw_platform( GNode *dnode, double r0 )
@@ -2540,15 +2742,21 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 		corners[i].y = p.x * sin_theta + p.y * cos_theta;
 	}
 
-	/* Draw top face */
-	// Note order of vertices for triangle stripping.
-	Vertex vert[] = {
-		{{corners[0].x, corners[0].y, z1}, {0, 0, 1}},
-		{{corners[1].x, corners[1].y, z1}, {0, 0, 1}},
-		{{corners[3].x, corners[3].y, z1}, {0, 0, 1}},
-		{{corners[2].x, corners[2].y, z1}, {0, 0, 1}},
-	};
-	drawVertex(GL_TRIANGLE_STRIP, vert, 4, NULL, node);
+	/* Draw top face (and, if a full node, side faces): batched in
+	 * RENDER mode (see treev_batch_add_leaf( )); drawn immediately, one
+	 * node at a time, in SELECT mode (picking), same as MapV. */
+	if (gl.render_mode == RENDERMODE_RENDER)
+		treev_batch_add_leaf( node, corners, z0, z1, sin_theta, cos_theta, full_node );
+	else {
+		// Note order of vertices for triangle stripping.
+		Vertex vert[] = {
+			{{corners[0].x, corners[0].y, z1}, {0, 0, 1}},
+			{{corners[1].x, corners[1].y, z1}, {0, 0, 1}},
+			{{corners[3].x, corners[3].y, z1}, {0, 0, 1}},
+			{{corners[2].x, corners[2].y, z1}, {0, 0, 1}},
+		};
+		drawVertex(GL_TRIANGLE_STRIP, vert, 4, NULL, node);
+	}
 
 	if (!full_node) {
 		/* Draw an "X" and we're done */
@@ -2558,6 +2766,9 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 		drawVertexPos(GL_LINES, vertx, 4, &color_black);
 		return;
 	}
+
+	if (gl.render_mode == RENDERMODE_RENDER)
+		return; /* side faces already appended by treev_batch_add_leaf( ) above */
 
 	/* Draw side faces */
 	Vertex vside[] = {
@@ -3197,7 +3408,9 @@ treev_draw( boolean high_detail )
 
 	/* Draw low-detail geometry */
 
+	treev_batch_begin( );
 	treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY_WITH_BRANCHES );
+	treev_batch_flush( );
 
 	if (fstree_low_draw_stage <= 1)
 		++fstree_low_draw_stage;
