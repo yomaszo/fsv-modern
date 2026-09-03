@@ -2063,6 +2063,60 @@ treev_reshape_platform( GNode *dnode, double r0 )
 }
 
 
+/* Pure (side-effect free) helper -- computes the "official" depth that
+ * treev_build_dir( ) would end up assigning to a directory with
+ * n_children immediate children, the given arc_width, and inner radius
+ * r0, by replicating its row-layout recurrence exactly (same formulas,
+ * same order of operations) without touching any GNode, drawing
+ * anything, or writing to platform.depth. Currently used only for
+ * diagnostic comparison against treev_reshape_platform( )'s estimate
+ * (see FSV_DEBUG_ARRANGE below) -- NOT YET wired into any actual
+ * decision; this is deliberately step 1 of a multi-step plan (see
+ * backlog) after the 2026-08-31 crash from doing this and wiring it up
+ * in one shot. Capped at a generous iteration count as a safety net:
+ * if arc_width is ever pathologically small, a row can accommodate 0
+ * (or negative) nodes, and the real treev_build_dir( ) recurrence
+ * would only terminate once pos_r grows enough for arc_len to turn
+ * positive again -- which happens for any arc_width > 0, but
+ * potentially only after a huge number of iterations. */
+static double
+treev_compute_exact_depth( int n_children, double arc_width, double r0 )
+{
+#define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
+#define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
+#define TREEV_EXACT_DEPTH_MAX_ITERATIONS 10000
+	double pos_r;
+	double arc_len;
+	int row_node_count;
+	int remaining_node_count;
+	int iterations = 0;
+
+	remaining_node_count = n_children;
+	pos_r = r0 + TREEV_LEAF_NODE_EDGE;
+	while (remaining_node_count > 0) {
+		if (++iterations > TREEV_EXACT_DEPTH_MAX_ITERATIONS) {
+			g_warning("treev_compute_exact_depth( ): did not converge after "
+				  "%d iterations (n_children=%d, arc_width=%.6g, r0=%.6g) "
+				  "-- bailing out with a possibly-wrong result",
+				  TREEV_EXACT_DEPTH_MAX_ITERATIONS, n_children, arc_width, r0);
+			break;
+		}
+		/* Same recurrence as treev_build_dir( ) below, minus the actual
+		 * leaf placement/drawing side effects */
+		arc_len = (PI / 180.0) * pos_r * arc_width - TREEV_PLATFORM_SPACING_WIDTH;
+		row_node_count = (int)floor( (arc_len - edge05) / edge15 );
+		remaining_node_count -= row_node_count;
+		pos_r += edge15;
+	}
+	pos_r -= edge05;
+
+	return pos_r - r0;
+#undef edge05
+#undef edge15
+#undef TREEV_EXACT_DEPTH_MAX_ITERATIONS
+}
+
+
 /* Helper function for treev_arrange( ). @reshape_tree flag should be TRUE
  * if platform radiuses have changed (thus requiring reshaping) */
 static void
@@ -2108,8 +2162,12 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 			treev_reshape_platform( dnode, r0 );
 			if (treev_debug_arrange) {
 				TreeVGeomParams *dbg_gp2 = TREEV_GEOM_PARAMS(dnode);
-				g_print("  -> after reshape: arc_width=%.6g depth=%.6g\n",
-					dbg_gp2->platform.arc_width, dbg_gp2->platform.depth);
+				int n_children = g_list_length( (GList *)dnode->children );
+				double exact_depth = treev_compute_exact_depth( n_children, dbg_gp2->platform.arc_width, r0 );
+				g_print("  -> after reshape: arc_width=%.6g depth(estimate)=%.6g "
+					"depth(exact, n=%d)=%.6g\n",
+					dbg_gp2->platform.arc_width, dbg_gp2->platform.depth,
+					n_children, exact_depth);
 			}
 		}
 	}
