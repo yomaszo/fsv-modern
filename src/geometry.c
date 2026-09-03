@@ -2118,14 +2118,31 @@ treev_compute_exact_depth( int n_children, double arc_width, double r0 )
 
 
 /* Helper function for treev_arrange( ). @reshape_tree flag should be TRUE
- * if platform radiuses have changed (thus requiring reshaping) */
-static void
+ * if platform radiuses have changed (thus requiring reshaping).
+ *
+ * Returns this subtree's max_subtree_r -- the outermost radius reached
+ * by anything in dnode's subtree (its own platform's outer edge, or
+ * further out if an expanded child's own subtree reaches further).
+ * DIAGNOSTIC ONLY for now (see FSV_DEBUG_ARRANGE below): nothing reads
+ * this return value outside of debug printing, and it is NOT stored on
+ * any GNode. Two known approximations, both fine for a diagnostic and
+ * both to be revisited once this gets wired into an actual decision:
+ * (1) the early-return paths below (no rearrange needed, or a
+ * collapsed/leaf directory) don't have a freshly computed depth to
+ * work from, so they return just this node's own r0-based extent,
+ * ignoring however far an already-expanded-but-unchanged subtree
+ * might reach beyond that; (2) it reflects the ESTIMATED depth
+ * (treev_reshape_platform( )'s), not the exact one from
+ * treev_compute_exact_depth( ), since only the estimate is actually
+ * stored in platform.depth right now. */
+static double
 treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 {
 	GNode *node;
 	double subtree_r0;
 	double arc_width, subtree_arc_width = 0.0;
 	double theta;
+	double subtree_max_r;
 	/* Temporary diagnostic for the arc_width=0 investigation (see
 	 * backlog) -- enable with FSV_DEBUG_ARRANGE=1 in the environment.
 	 * Not gated behind #ifdef DEBUG so it can be flipped on in a
@@ -2149,13 +2166,13 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 	}
 
 	if (!reshape_tree && !(NODE_DESC(dnode)->flags & TREEV_NEED_REARRANGE))
-		return;
+		return r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
 
 	if (reshape_tree && NODE_IS_DIR(dnode)) {
 		if (geometry_treev_is_leaf(dnode)) {
 			/* Ensure directory leaf gets repositioned */
 			geometry_queue_rebuild( dnode );
-			return;
+			return r0;
 		}
 		else {
 			/* Reshape directory platform */
@@ -2172,6 +2189,9 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 		}
 	}
 
+	/* This node's own contribution, before considering any children */
+	subtree_max_r = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
+
 	/* Recurse into expanded subdirectories, and obtain the overall
 	 * arc width of the subtree */
 	subtree_r0 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
@@ -2179,7 +2199,10 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 	while (node != NULL) {
 		if (!NODE_IS_DIR(node))
 			break;
-		treev_arrange_recursive( node, subtree_r0, reshape_tree );
+		{
+			double child_max_r = treev_arrange_recursive( node, subtree_r0, reshape_tree );
+			subtree_max_r = MAX(subtree_max_r, child_max_r);
+		}
 		arc_width = DIR_NODE_DESC(node)->deployment * MAX(TREEV_GEOM_PARAMS(node)->platform.arc_width, TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width);
 		TREEV_GEOM_PARAMS(node)->platform.theta = arc_width; /* temporary value */
 		subtree_arc_width += arc_width;
@@ -2199,8 +2222,16 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 		node = node->next;
 	}
 
+	if (treev_debug_arrange) {
+		g_print("  -> subtree_max_r for %s: %.6g (own outer edge %.6g)\n",
+			NODE_IS_METANODE(dnode) ? "<meta>" : NODE_DESC(dnode)->name,
+			subtree_max_r, r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth);
+	}
+
 	/* Clear the "need rearrange" flag */
 	NODE_DESC(dnode)->flags &= ~TREEV_NEED_REARRANGE;
+
+	return subtree_max_r;
 }
 
 
