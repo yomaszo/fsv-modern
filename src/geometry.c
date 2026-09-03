@@ -2072,8 +2072,27 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 	double subtree_r0;
 	double arc_width, subtree_arc_width = 0.0;
 	double theta;
+	/* Temporary diagnostic for the arc_width=0 investigation (see
+	 * backlog) -- enable with FSV_DEBUG_ARRANGE=1 in the environment.
+	 * Not gated behind #ifdef DEBUG so it can be flipped on in a
+	 * release build without a rebuild-with-different-flags detour;
+	 * the getenv( ) is cached so the steady-state cost is one branch
+	 * per call when disabled. Remove once the root cause is found. */
+	static int treev_debug_arrange = -1;
+	if (treev_debug_arrange < 0)
+		treev_debug_arrange = (g_getenv("FSV_DEBUG_ARRANGE") != NULL);
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
+
+	if (treev_debug_arrange) {
+		TreeVGeomParams *dbg_gp = TREEV_GEOM_PARAMS(dnode);
+		g_print("treev_arrange_recursive: dnode=%p %s r0=%.6g reshape_tree=%d "
+			"arc_width=%.6g depth=%.6g need_rearrange=%d\n",
+			(void *)dnode,
+			NODE_IS_METANODE(dnode) ? "<meta>" : NODE_DESC(dnode)->name,
+			r0, (int)reshape_tree, dbg_gp->platform.arc_width, dbg_gp->platform.depth,
+			(NODE_DESC(dnode)->flags & TREEV_NEED_REARRANGE) ? 1 : 0);
+	}
 
 	if (!reshape_tree && !(NODE_DESC(dnode)->flags & TREEV_NEED_REARRANGE))
 		return;
@@ -2087,6 +2106,11 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 		else {
 			/* Reshape directory platform */
 			treev_reshape_platform( dnode, r0 );
+			if (treev_debug_arrange) {
+				TreeVGeomParams *dbg_gp2 = TREEV_GEOM_PARAMS(dnode);
+				g_print("  -> after reshape: arc_width=%.6g depth=%.6g\n",
+					dbg_gp2->platform.arc_width, dbg_gp2->platform.depth);
+			}
 		}
 	}
 
@@ -2212,6 +2236,16 @@ treev_init_recursive( GNode *dnode )
 			TREEV_GEOM_PARAMS(node)->platform.height = TREEV_PLATFORM_HEIGHT;
 			TREEV_GEOM_PARAMS(node)->platform.arc_width = TREEV_MIN_ARC_WIDTH;
 			TREEV_GEOM_PARAMS(node)->platform.subtree_arc_width = TREEV_MIN_ARC_WIDTH;
+			/* Not a real estimate -- just a defined, recognizably
+			 * "not yet built" placeholder until treev_reshape_platform( )
+			 * lays down an actual value the first time this directory is
+			 * expanded. Without this, an unexpanded directory's depth is
+			 * whatever was in the freshly-allocated GEOM_PARAMS memory --
+			 * observed 2026-09-03 via FSV_DEBUG_ARRANGE as denormalized
+			 * garbage (e.g. 6.95262e-310), not a clean 0.0. A real depth
+			 * from treev_reshape_platform( ) is always > edge05 + edge15,
+			 * so 0.0 can never be mistaken for a genuine value. */
+			TREEV_GEOM_PARAMS(node)->platform.depth = 0.0;
 			treev_init_recursive( node );
 		}
 		TREEV_GEOM_PARAMS(node)->leaf.height = CLAMP(
