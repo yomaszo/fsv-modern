@@ -2128,12 +2128,34 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 static void
 treev_arrange( boolean initial_arrange )
 {
+	/* Safety net for the retry loop below: growing/shrinking
+	 * treev_core_radius is only ever supposed to take a handful of
+	 * iterations to settle. But it has a known failure mode -- seen
+	 * 2026-08-31 during an unrelated culling experiment -- where a
+	 * numerical bug upstream (e.g. subtree_arc_width coming out as
+	 * -nan) can make the > / < comparisons below never resolve to
+	 * "within bounds", so the loop grows core_radius forever (it
+	 * reached ~10^27 before the process had to be killed). Bailing
+	 * out after a generous-but-finite number of iterations turns
+	 * that into a visible warning instead of a silent hang, without
+	 * changing behavior in the normal case. */
+#define TREEV_ARRANGE_MAX_ITERATIONS	64
 	boolean resized = FALSE;
+	int iterations = 0;
 
 	treev_arrange_recursive( globals.fstree, treev_core_radius, initial_arrange );
 
 	/* Check that the tree's total arc width is within bounds */
 	for (;;) {
+		if (++iterations > TREEV_ARRANGE_MAX_ITERATIONS) {
+			g_warning("treev_arrange( ): core-radius retry loop did not "
+				  "converge after %d iterations (subtree_arc_width=%g, "
+				  "core_radius=%g) -- bailing out to avoid an infinite loop",
+				  TREEV_ARRANGE_MAX_ITERATIONS,
+				  TREEV_GEOM_PARAMS(globals.fstree)->platform.subtree_arc_width,
+				  treev_core_radius);
+			break;
+		}
 		if (TREEV_GEOM_PARAMS(globals.fstree)->platform.subtree_arc_width > TREEV_MAX_ARC_WIDTH) {
 			/* Grow core radius */
 			treev_core_radius *= TREEV_CORE_GROW_FACTOR;
@@ -2149,6 +2171,7 @@ treev_arrange( boolean initial_arrange )
 		else
 			break;
 	}
+#undef TREEV_ARRANGE_MAX_ITERATIONS
 
 	if (resized && camera_moving( )) {
 		/* Camera's destination has moved, so it will need a
