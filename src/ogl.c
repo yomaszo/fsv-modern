@@ -21,6 +21,7 @@
 #include "camera.h"
 #include "geometry.h"
 #include "tmaptext.h" /* text_init( ) */
+#include "viewport.h"
 
 
 /* Main viewport OpenGL area widget */
@@ -525,7 +526,18 @@ render(GtkGLArea *area, GdkGLContext *context)
 	setup_projection_matrix( TRUE );
 	setup_modelview_matrix( );
 	ogl_upload_matrices(FALSE);
-	geometry_draw( TRUE );
+	/* Hiding labels/cursor during camera movement (rotate, tilt, and the
+	 * animated click-to-navigate pan) is a MapV-only performance win --
+	 * the user asked for this to NOT apply to TreeV, where labels should
+	 * always be drawn regardless of camera state. Scroll-wheel zoom never
+	 * counts as "moving" here (camera_dolly( ) doesn't set the moving
+	 * flag), so it already got full detail in every mode before this. */
+	{
+		boolean high_detail = !camera_moving( ) && !viewport_camera_dragging( );
+		if (globals.fsv_mode == FSV_TREEV)
+			high_detail = TRUE;
+		geometry_draw( high_detail );
+	}
 
 	/* Error check */
 	ogl_error();

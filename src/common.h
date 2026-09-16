@@ -200,14 +200,18 @@ struct _NodeDesc {
 	time_t		mtime;		/* Last modification time */
 	time_t		ctime;		/* Last attribute change time */
 	const RGBcolor	*color;		/* Node color */
-	double		geomparams[5];	/* Geometry parameters */
+	double		geomparams[5];	/* Geometry parameters (overlaid by *GeomParams) */
 };
 
 /* Directories have their own extended descriptor */
 typedef struct _DirNodeDesc DirNodeDesc;
 struct _DirNodeDesc {
 	NodeDesc	node_desc;
-	double		geomparams2[3];	/* More geometry parameters */
+	/* Continues the *GeomParams overlay after geomparams[5].
+	 * TreeVGeomParams is 9 doubles (3 leaf + 6 platform); that MUST
+	 * equal geomparams[5] + geomparams2[4]. Adding a TreeV field
+	 * without enlarging this array overwrites deployment. */
+	double		geomparams2[4];
 	double		deployment;	/* 0 == collapsed, 1 == expanded */
 	/* Subtree information. The quantities here do not include the
 	 * contribution of the root of the subtree (i.e. THIS node) */
@@ -215,6 +219,10 @@ struct _DirNodeDesc {
 		int64		size;	/* Total subtree size (bytes) */
 		unsigned int	counts[NUM_NODE_TYPES]; /* Node type totals */
 	} subtree;
+	/* Cached child count for efficient iteration. Updated when tree
+	 * structure changes. Used in treev_build_dir() to avoid O(n)
+	 * g_list_length() calls. */
+	int		child_count;
 	/* Following pointer should be of type GtkTreePath */
 	void		*tnode;	/* Directory tree entry */
 	/* Flag: TRUE if directory geometry is being drawn expanded */

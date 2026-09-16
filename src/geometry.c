@@ -22,9 +22,16 @@
 #include "dirtree.h" /* dirtree_entry_expanded( ) */
 #include "ogl.h"
 #include "tmaptext.h"
+#include "viewport.h"
 
 /* 3D geometry for splash screen */
 #include "fsv3d.h"
+
+/* TreeVGeomParams overlays NodeDesc.geomparams[] then DirNodeDesc.geomparams2[].
+ * Files only have the first 5 doubles (leaf fields). Directories must fit all
+ * 9. If this fires, enlarge geomparams2 and this count together. */
+G_STATIC_ASSERT(sizeof(TreeVGeomParams) == 9 * sizeof(double));
+G_STATIC_ASSERT(sizeof(TreeVGeomParams) <= sizeof(((DirNodeDesc *)0)->node_desc.geomparams) + sizeof(((DirNodeDesc *)0)->geomparams2));
 
 
 /* Cursor position remapping from linear to quarter-sine
@@ -523,7 +530,10 @@ discv_draw( boolean high_detail )
 
 	discv_draw_recursive( globals.fstree, DISCV_DRAW_GEOMETRY );
 
-	if (fstree_low_draw_stage <= 1)
+	/* See treev_draw( ) for why this must not run for SELECT-mode
+	 * (node-picking) calls -- only a genuine on-screen render may
+	 * advance the shared draw-stage counters. */
+	if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_low_draw_stage <= 1))
 		++fstree_low_draw_stage;
 
 
@@ -537,7 +547,7 @@ discv_draw( boolean high_detail )
 			discv_draw_recursive( globals.fstree, DISCV_DRAW_LABELS );
 			text_post( );
 		}
-		if (fstree_high_draw_stage <= 1)
+		if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_high_draw_stage <= 1))
 			++fstree_high_draw_stage;
 
 		/* Node cursor */
@@ -1677,7 +1687,7 @@ mapv_draw( boolean high_detail )
 	mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY );
 	mapv_batch_flush( );
 
-	if (fstree_low_draw_stage <= 1)
+	if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_low_draw_stage <= 1))
 		++fstree_low_draw_stage;
 
 	if (high_detail) {
@@ -1688,7 +1698,7 @@ mapv_draw( boolean high_detail )
 		text_set_color(0.0, 0.0, 0.0); /* all labels are black */
 		mapv_draw_recursive( globals.fstree, MAPV_DRAW_LABELS );
 		text_post( );
-		if (fstree_high_draw_stage <= 1)
+		if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_high_draw_stage <= 1))
 			++fstree_high_draw_stage;
 
 		/* Node cursor */
@@ -2120,21 +2130,15 @@ treev_compute_exact_depth( int n_children, double arc_width, double r0 )
 /* Helper function for treev_arrange( ). @reshape_tree flag should be TRUE
  * if platform radiuses have changed (thus requiring reshaping).
  *
- * Returns this subtree's max_subtree_r -- the outermost radius reached
- * by anything in dnode's subtree (its own platform's outer edge, or
- * further out if an expanded child's own subtree reaches further).
- * DIAGNOSTIC ONLY for now (see FSV_DEBUG_ARRANGE below): nothing reads
- * this return value outside of debug printing, and it is NOT stored on
- * any GNode. Two known approximations, both fine for a diagnostic and
- * both to be revisited once this gets wired into an actual decision:
- * (1) the early-return paths below (no rearrange needed, or a
- * collapsed/leaf directory) don't have a freshly computed depth to
- * work from, so they return just this node's own r0-based extent,
- * ignoring however far an already-expanded-but-unchanged subtree
- * might reach beyond that; (2) it reflects the ESTIMATED depth
- * (treev_reshape_platform( )'s), not the exact one from
- * treev_compute_exact_depth( ), since only the estimate is actually
- * stored in platform.depth right now. */
+ * Returns this subtree's outermost radius and stores it on the node as
+ * platform.subtree_max_depth (offset from r0). Draw-side culling reads
+ * that cache; it must not walk the subtree again.
+ *
+ * Approximations: early-return uses the last stored cache (correct once
+ * a full arrange has run); depth is treev_reshape_platform( )'s estimate
+ * until a visible treev_build_dir( ) overwrites it with the exact row
+ * layout. The AABB is therefore slightly conservative/stale, which is
+ * the right direction for culling. */
 static double
 treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 {
@@ -2166,7 +2170,7 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 	}
 
 	if (!reshape_tree && !(NODE_DESC(dnode)->flags & TREEV_NEED_REARRANGE))
-		return r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
+		return r0 + TREEV_GEOM_PARAMS(dnode)->platform.subtree_max_depth;
 
 	if (reshape_tree && NODE_IS_DIR(dnode)) {
 		if (geometry_treev_is_leaf(dnode)) {
@@ -2227,6 +2231,12 @@ treev_arrange_recursive( GNode *dnode, double r0, boolean reshape_tree )
 			NODE_IS_METANODE(dnode) ? "<meta>" : NODE_DESC(dnode)->name,
 			subtree_max_r, r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth);
 	}
+
+	/* Persist for treev_draw_recursive( )'s culling test -- stored as an
+	 * offset from r0 (see the field's comment in geometry.h) so it stays
+	 * valid even if this exact r0 doesn't recur (e.g. read via a stale
+	 * early-return above after an ancestor's depth shifts things). */
+	TREEV_GEOM_PARAMS(dnode)->platform.subtree_max_depth = subtree_max_r - r0;
 
 	/* Clear the "need rearrange" flag */
 	NODE_DESC(dnode)->flags &= ~TREEV_NEED_REARRANGE;
@@ -2312,6 +2322,8 @@ treev_init_recursive( GNode *dnode )
 		else
 			DIR_NODE_DESC(dnode)->deployment = 0.0;
 		geometry_queue_rebuild( dnode );
+		/* Initialize cache for child count. */
+		DIR_NODE_DESC(dnode)->child_count = g_node_n_children(dnode);
 	}
 
 	NODE_DESC(dnode)->flags = 0;
@@ -2335,6 +2347,7 @@ treev_init_recursive( GNode *dnode )
 			 * from treev_reshape_platform( ) is always > edge05 + edge15,
 			 * so 0.0 can never be mistaken for a genuine value. */
 			TREEV_GEOM_PARAMS(node)->platform.depth = 0.0;
+			TREEV_GEOM_PARAMS(node)->platform.subtree_max_depth = 0.0;
 			treev_init_recursive( node );
 		}
 		TREEV_GEOM_PARAMS(node)->leaf.height = CLAMP(
@@ -2364,6 +2377,7 @@ treev_init( void )
 	gparams = TREEV_GEOM_PARAMS(globals.fstree);
 	gparams->platform.theta = 90.0;
 	gparams->platform.depth = 0.0;
+	gparams->platform.subtree_max_depth = 0.0;
 	gparams->platform.arc_width = TREEV_MAX_ARC_WIDTH;
 	gparams->platform.height = 0.0;
 
@@ -3176,12 +3190,33 @@ treev_build_dir( GNode *dnode, double r0 )
 	RTvec pos;
 	double arc_len, inter_arc_width;
 	int n, row_node_count, remaining_node_count;
+	/* Temporary diagnostic for the label-smear bug (2026-09-13) -- enable
+	 * with FSV_DEBUG_LABELS=1. Checks whether child_count (the cache
+	 * introduced alongside this bug) matches the real list length, and
+	 * shows the very first row's row_node_count -- if that comes out
+	 * <= 0, the inner assignment loop never runs and every child keeps
+	 * its zeroed leaf.distance/leaf.theta, exactly matching what the
+	 * label log showed. Remove once root cause is found. */
+	static int treev_debug_labels = -1;
+	if (treev_debug_labels < 0)
+		treev_debug_labels = (g_getenv("FSV_DEBUG_LABELS") != NULL);
+
+	if (treev_debug_labels) {
+		int real_count = g_list_length( (GList *)dnode->children );
+		int cached_count = DIR_NODE_DESC(dnode)->child_count;
+		double dbg_arc_len = (PI / 180.0) * (r0 + TREEV_LEAF_NODE_EDGE) * TREEV_GEOM_PARAMS(dnode)->platform.arc_width - TREEV_PLATFORM_SPACING_WIDTH;
+		int dbg_row_node_count = (int)floor( (dbg_arc_len - edge05) / edge15 );
+		g_print("treev_build_dir: %s r0=%.6g arc_width=%.6g child_count=%d real_count=%d "
+			"first_row_arc_len=%.6g first_row_node_count=%d\n",
+			NODE_DESC(dnode)->name, r0, TREEV_GEOM_PARAMS(dnode)->platform.arc_width,
+			cached_count, real_count, dbg_arc_len, dbg_row_node_count);
+	}
 
 	g_assert( NODE_IS_DIR(dnode) );
 
 	/* Build rows of leaf nodes, going from the inner edge outward
 	 * (this will require laying down nodes in reverse order) */
-	remaining_node_count = g_list_length( (GList *)dnode->children );
+	remaining_node_count = DIR_NODE_DESC(dnode)->child_count;
 	pos.r = r0 + TREEV_LEAF_NODE_EDGE;
 	node = (GNode *)g_list_last( (GList *)dnode->children );
 	while (node != NULL) {
@@ -3227,6 +3262,24 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 	XYvec leaf_label_dims;
 	RTvec platform_label_dims;
 	double height;
+	/* Temporary diagnostic for the label-smear bug reported 2026-09-13
+	 * (many unrelated labels overlapping when zoomed into a directory)
+	 * -- enable with FSV_DEBUG_LABELS=1. Prints every label actually
+	 * submitted for drawing, with enough position info to tell whether
+	 * the label-visibility filter (radius-only, ignores theta) or
+	 * something else is responsible. Remove once root cause is found. */
+	static int treev_debug_labels = -1;
+	if (treev_debug_labels < 0)
+		treev_debug_labels = (g_getenv("FSV_DEBUG_LABELS") != NULL);
+
+	if (treev_debug_labels) {
+		double abs_r = is_leaf ? r0 + TREEV_GEOM_PARAMS(node)->leaf.distance : r0;
+		double abs_theta = is_leaf ? TREEV_GEOM_PARAMS(node)->leaf.theta : 0.0;
+		g_print("treev_apply_label: %s is_leaf=%d r0=%.6g abs_r=%.6g leaf_theta=%.6g "
+			"target_r=%.6g target_theta=%.6g\n",
+			NODE_DESC(node)->name, (int)is_leaf, r0, abs_r, abs_theta,
+			TREEV_CAMERA(camera)->target.r, TREEV_CAMERA(camera)->target.theta);
+	}
 
 	if (is_leaf) {
 		/* Apply label to top face of leaf node */
@@ -3268,6 +3321,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 	double theta0, theta1;
 	boolean dir_collapsed;
 	boolean dir_expanded;
+	boolean subtree_culled = FALSE;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 	dir_ndesc = DIR_NODE_DESC(dnode);
@@ -3308,6 +3362,10 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 
 		glm_rotate_z(gl.modelview, dir_gparams->platform.theta * M_PI / 180.0, gl.modelview);
 		ogl_upload_matrices(TRUE);
+
+		/* Keep TreeV subtrees during camera movement and close zooms. The
+		 * cached polar wedge is only an approximation and can hide valid
+		 * nested geometry; label distance culling handles the cheap LOD. */
 	}
 
 	if (action >= TREEV_DRAW_GEOMETRY) {
@@ -3319,14 +3377,15 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 			treev_gldraw_leaf(dnode, prev_r0, TRUE);
 			treev_gldraw_folder(dnode, prev_r0);
 		}
-		else if (NODE_IS_DIR(dnode))
+		else if (NODE_IS_DIR(dnode) && !subtree_culled)
 		{
-			/* Platform form (with leaf children) */
+			/* treev_build_dir() computes positions and submits the platform
+			 * and leaf geometry to OpenGL, so it must run for every draw. */
 			treev_build_dir(dnode, r0);
 		}
 	}
 
-	if (!dir_collapsed) {
+	if (!dir_collapsed && !subtree_culled) {
 		/* Recurse into subdirectories */
 		subtree_r0 = r0 + dir_gparams->platform.depth + TREEV_PLATFORM_SPACING_DEPTH;
 		node = dnode->children;
@@ -3345,7 +3404,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 		}
 	}
 
-	if (dir_expanded && (action == TREEV_DRAW_GEOMETRY_WITH_BRANCHES)) {
+	if (dir_expanded && !subtree_culled && (action == TREEV_DRAW_GEOMETRY_WITH_BRANCHES)) {
 		/* Draw interconnecting branches */
 		if (NODE_IS_METANODE(dnode))
 		{
@@ -3388,7 +3447,7 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 				       treev_leaf_label_color.b);
 			treev_apply_label(dnode, prev_r0, TRUE);
 		}
-		else if (NODE_IS_DIR(dnode))
+		else if (NODE_IS_DIR(dnode) && !subtree_culled)
 		{
 			/* Label directory platform */
 			text_set_color(treev_platform_label_color.r,
@@ -3549,6 +3608,8 @@ treev_draw_cursor( double pos )
 static void
 treev_draw( boolean high_detail )
 {
+	boolean draw_labels;
+
 	if ((fstree_low_draw_stage == 0) || (fstree_high_draw_stage == 0))
 		treev_arrange( FALSE );
 
@@ -3558,10 +3619,23 @@ treev_draw( boolean high_detail )
 	treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY_WITH_BRANCHES );
 	treev_batch_flush( );
 
-	if (fstree_low_draw_stage <= 1)
+	/* Only a genuine on-screen render advances the draw-stage bookkeeping.
+	 * treev_draw( ) is also invoked from ogl_select_modern( ) (node-picking,
+	 * triggered by mouse hover -- see viewport.c's hover_pick_due( )), which
+	 * runs at its own, independent timing relative to the real render( )
+	 * callback. Letting a SELECT-mode call increment these shared static
+	 * counters lets it silently "use up" a stage transition that the next
+	 * real frame was relying on (e.g. skipping treev_arrange( ) because the
+	 * counter says stage 1 already happened, when it only happened for a
+	 * throwaway picking pass) -- a timing-dependent bug matching the
+	 * 2026-09-15 label-smear report (reproduced only at certain zoom points
+	 * during scroll-wheel zoom, i.e. exactly when hover-picks are likely to
+	 * interleave with real frames). */
+	if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_low_draw_stage <= 1))
 		++fstree_low_draw_stage;
 
-	if (high_detail) {
+	draw_labels = high_detail;
+	if (draw_labels) {
 		/* Draw additional high-detail stuff */
 
 		/* Node name labels */
@@ -3569,10 +3643,12 @@ treev_draw( boolean high_detail )
 		treev_draw_recursive(globals.fstree, NIL, treev_core_radius, TREEV_DRAW_LABELS);
 		text_post();
 
-		if (fstree_high_draw_stage <= 1)
+		if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_high_draw_stage <= 1))
 			++fstree_high_draw_stage;
 
 		/* Node cursor */
+		if (!high_detail)
+			return;
 		treev_draw_cursor( CURSOR_POS(camera->pan_part) );
 	}
 }

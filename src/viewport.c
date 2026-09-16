@@ -17,6 +17,7 @@
 #include <epoxy/gl.h> /* GLuint */
 
 #include "about.h"
+#include "animation.h"
 #include "camera.h"
 #include "dialog.h" /* context_menu( ) */
 #include "filelist.h" /* filelist_show_entry( ) */
@@ -33,6 +34,7 @@
  * delta) moves the camera toward/away from its target, in the same
  * units as camera_dolly( )'s argument */
 #define SCROLL_DOLLY_STEP 32.0
+#define HOVER_PICK_INTERVAL 0.08
 
 
 /* The node table, used to find a node by its ID number */
@@ -41,6 +43,22 @@ static size_t node_table_size;
 
 /* The currently highlighted (indicated) node */
 static GNode *indicated_node = NULL;
+static boolean camera_dragging = FALSE;
+static double last_hover_pick_time = -1.0;
+
+
+boolean
+viewport_camera_dragging( void )
+{
+	return camera_dragging;
+}
+
+
+GNode *
+viewport_indicated_node( void )
+{
+	return indicated_node;
+}
 
 
 /* Receives a newly created node table from scanfs( ) */
@@ -70,6 +88,20 @@ node_at_location( int x, int y)
 			return node_table[n_id];
 	}
 	return NULL;
+}
+
+
+static boolean
+hover_pick_due( void )
+{
+	double now = xgettime( );
+
+	if (last_hover_pick_time >= 0.0
+	    && now - last_hover_pick_time < HOVER_PICK_INTERVAL)
+		return FALSE;
+
+	last_hover_pick_time = now;
+	return TRUE;
 }
 
 
@@ -128,6 +160,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		if (!gdk_event_get_state(event, &ev_state))
 			break;
 		ctrl_key = ev_state & GDK_CONTROL_MASK;
+		camera_dragging = (btn2 || (btn1 && ctrl_key));
 		if (!gdk_event_get_coords(event, &x, &y))
 			break;
 		scale = gtk_widget_get_scale_factor(gl_area_w);
@@ -169,6 +202,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		break;
 
 		case GDK_BUTTON_RELEASE:
+			camera_dragging = FALSE;
 		if (!gdk_event_get_state(event, &ev_state))
 			break;
 		btn1 = ev_state & GDK_BUTTON1_MASK;
@@ -176,6 +210,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		if (btn1 && !ctrl_key && !camera_moving( ) && (indicated_node != NULL))
 			camera_look_at( indicated_node );
 		gui_cursor( gl_area_w, -1 );
+		redraw( );
 		break;
 
 		case GDK_MOTION_NOTIFY:
@@ -232,8 +267,8 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 						indicated_node = NULL;
 				}
 			}
-                        else
-				indicated_node = node_at_location(x, y);
+						else if (hover_pick_due())
+							indicated_node = node_at_location(x, y);
 			/* Update node highlighting */
 			if (indicated_node == NULL) {
 				geometry_highlight_node( NULL, FALSE );
@@ -254,6 +289,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 
 		case GDK_LEAVE_NOTIFY:
 		/* The mouse has left the viewport */
+			camera_dragging = FALSE;
 		geometry_highlight_node( NULL, FALSE );
 		window_statusbar( SB_RIGHT, "" );
 		gui_cursor( gl_area_w, -1 );

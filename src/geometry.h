@@ -74,6 +74,12 @@ struct _TreeVGeomParams {
 		double height;
 		/* Overall arc width of subtree */
 		double subtree_arc_width;
+		/* Outermost radius of this subtree as an offset from r0
+		 * (own outer edge, or further if an expanded child reaches
+		 * further). Cached in treev_arrange_recursive( ) so draw-time
+		 * culling is O(1). Lives in geomparams2[]; do not add more
+		 * platform fields without enlarging that array -- see DirNodeDesc. */
+		double subtree_max_depth;
 	} platform;
 };
 
