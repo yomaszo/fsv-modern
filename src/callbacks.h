@@ -54,6 +54,22 @@ on_help_show_fps_toggled               (GtkCheckMenuItem *menuitem,
                                         gpointer         user_data);
 
 void
+on_help_treev_culling_toggled          (GtkCheckMenuItem *menuitem,
+                                        gpointer         user_data);
+
+void
+on_help_treev_lod_toggled              (GtkCheckMenuItem *menuitem,
+                                        gpointer         user_data);
+
+void
+on_help_treev_hide_labels_moving_toggled (GtkCheckMenuItem *menuitem,
+                                        gpointer         user_data);
+
+void
+on_help_mapv_hide_labels_moving_toggled (GtkCheckMenuItem *menuitem,
+                                        gpointer         user_data);
+
+void
 on_back_button_clicked                 (GtkButton       *button,
                                         gpointer         user_data);
 

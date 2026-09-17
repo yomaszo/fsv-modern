@@ -20,6 +20,7 @@
 #include "color.h"
 #include "dialog.h"
 #include "fsv.h"
+#include "geometry.h"
 #include "ogl.h"
 
 
@@ -139,6 +140,35 @@ void
 on_help_show_fps_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
 {
 	ogl_set_fps_display( gtk_check_menu_item_get_active(menuitem) );
+}
+
+
+/* Performance toggles -- see geometry.c for what each one does and why its
+ * default was chosen. Kept as individual check items, mirroring "Show FPS",
+ * so each optimisation can be switched off on its own while diagnosing a
+ * rendering problem without rebuilding. */
+void
+on_help_treev_culling_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	geometry_set_treev_cull( gtk_check_menu_item_get_active(menuitem) );
+}
+
+void
+on_help_treev_lod_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	geometry_set_treev_lod( gtk_check_menu_item_get_active(menuitem) );
+}
+
+void
+on_help_treev_hide_labels_moving_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	geometry_set_treev_hide_labels_moving( gtk_check_menu_item_get_active(menuitem) );
+}
+
+void
+on_help_mapv_hide_labels_moving_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	geometry_set_mapv_hide_labels_moving( gtk_check_menu_item_get_active(menuitem) );
 }
 
 

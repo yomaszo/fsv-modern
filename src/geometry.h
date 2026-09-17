@@ -104,5 +104,16 @@ boolean geometry_should_highlight(GNode *node);
 void geometry_highlight_node( GNode *node, boolean strong );
 void geometry_free_recursive( GNode *dnode );
 
+/* Runtime performance toggles (Help menu check items; see geometry.c for
+ * the chosen defaults and the env vars that override them at startup) */
+boolean geometry_treev_cull_enabled( void );
+void geometry_set_treev_cull( boolean enabled );
+boolean geometry_treev_lod_enabled( void );
+void geometry_set_treev_lod( boolean enabled );
+boolean geometry_treev_hide_labels_moving( void );
+void geometry_set_treev_hide_labels_moving( boolean enabled );
+boolean geometry_mapv_hide_labels_moving( void );
+void geometry_set_mapv_hide_labels_moving( boolean enabled );
+
 
 /* end geometry.h */

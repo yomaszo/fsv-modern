@@ -3180,6 +3180,67 @@ treev_gldraw_outbranch( double r1, double theta0, double theta1 )
 }
 
 
+/* Per-leaf visibility test used by treev_build_dir( ) (added 2026-09-17).
+ *
+ * The wedge cull in treev_draw_recursive( ) can only skip a whole subtree.
+ * Within a visible directory every child still had its geometry submitted
+ * unconditionally, so a directory with thousands of entries paid for all of
+ * them even when only a handful were on screen. This projects the leaf's
+ * centre plus a radially-offset point to get its approximate NDC radius,
+ * and reports it invisible only when the resulting box is entirely outside
+ * the viewport (or behind the eye).
+ *
+ * Deliberately offscreen-only: no "too small to matter" rule here, because
+ * leaf geometry (unlike labels) is what gives a dense platform its shape at
+ * a distance, and dropping small nodes would visibly eat the surface.
+ *
+ * Only ever called in RENDERMODE_RENDER -- picking must keep considering
+ * every node, and its matrices are set up for a 1-pixel frustum where this
+ * test would not mean the same thing.
+ *
+ * Set FSV_TREEV_NO_LOD=1 to disable (same switch as the label LOD). */
+static boolean
+treev_leaf_offscreen( double r0, double distance, double theta )
+{
+	mat4 mvp;
+	double ang, cs, sn, rc, re;
+	double c[4], e[4];
+	double cx, cy, ex, ey, rad;
+	int k;
+
+	if (!geometry_treev_lod_enabled( ))
+		return FALSE;
+
+	glm_mat4_mul(gl.projection, gl.modelview, mvp);
+
+	ang = RAD(theta);
+	cs = cos(ang);
+	sn = sin(ang);
+	rc = r0 + distance;
+	re = rc + TREEV_LEAF_NODE_EDGE;
+
+	for (k = 0; k < 4; k++) {
+		c[k] = (double)mvp[0][k]*(rc*cs) + (double)mvp[1][k]*(rc*sn) + (double)mvp[3][k];
+		e[k] = (double)mvp[0][k]*(re*cs) + (double)mvp[1][k]*(re*sn) + (double)mvp[3][k];
+	}
+
+	if ((c[3] <= 0.0) || (e[3] <= 0.0))
+		return TRUE; /* behind the eye */
+
+	cx = c[0]/c[3];
+	cy = c[1]/c[3];
+	ex = e[0]/e[3];
+	ey = e[1]/e[3];
+
+	/* Approximate on-screen radius of the leaf box, with a safety factor so
+	 * nodes never pop at the viewport edge. */
+	rad = 2.0 * sqrt((cx - ex)*(cx - ex) + (cy - ey)*(cy - ey));
+
+	return ((cx + rad < -1.0) || (cx - rad > 1.0) ||
+		(cy + rad < -1.0) || (cy - rad > 1.0));
+}
+
+
 /* Arranges/draws leaf nodes on a directory */
 static void
 treev_build_dir( GNode *dnode, double r0 )
@@ -3232,7 +3293,12 @@ treev_build_dir( GNode *dnode, double r0 )
 		for (n = 0; (n < row_node_count) && (node != NULL); n++) {
 			TREEV_GEOM_PARAMS(node)->leaf.theta = pos.theta;
 			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
-			treev_gldraw_leaf( node, r0, !NODE_IS_DIR(node) );
+			/* The two assignments above are LAYOUT and must always run:
+			 * labels, picking and the camera all read leaf.theta /
+			 * leaf.distance. Only the draw call below is skippable. */
+			if ((gl.render_mode != RENDERMODE_RENDER) ||
+			    !treev_leaf_offscreen(r0, pos.r - r0, pos.theta))
+				treev_gldraw_leaf( node, r0, !NODE_IS_DIR(node) );
 			pos.theta -= inter_arc_width;
 			node = node->prev;
 		}
@@ -3250,6 +3316,167 @@ treev_build_dir( GNode *dnode, double r0 )
 
 #undef edge05
 #undef edge15
+}
+
+
+/* Screen-size LOD test for TreeV labels (added 2026-09-17).
+ *
+ * TreeV labels are the dominant per-frame cost: treev_apply_label( ) feeds
+ * text_draw_straight_rotated( ) / text_draw_curved( ), which draw
+ * immediately -- one draw call per label, no batching -- so a 54k-item tree
+ * issues on the order of 54k draw calls every frame. MapV got a large win
+ * from hiding labels while the camera moves; doing the same in TreeV was
+ * explicitly not wanted (labels should stay visible during rotate/tilt), so
+ * instead this culls purely on projected size: a label whose text would be
+ * a few pixels tall is unreadable anyway, and skipping it is invisible to
+ * the user while removing the draw call. Being size-based rather than
+ * motion-based, it also helps when parked and zoomed in, and never makes
+ * labels blink out as the camera starts or stops moving.
+ *
+ * world_size is measured RADIALLY (in the platform plane) rather than along
+ * z: TreeV is normally viewed at a tilt, so a z-offset can project to almost
+ * nothing even for a label that is large on screen, which would cull
+ * perfectly readable labels.
+ *
+ * Set FSV_TREEV_NO_LOD=1 to disable, restoring the previous draw-everything
+ * behaviour without a rebuild. */
+/* Runtime performance toggles, driven by the Help menu check items (see
+ * callbacks.c / window.c) in the same way as the FPS counter. Each env var
+ * below only supplies the STARTUP default, so a headless/scripted run can
+ * still pin a setting; the menu is authoritative afterwards.
+ *
+ * Defaults chosen 2026-09-17:
+ *  - TreeV subtree culling ON: with the wedge test's "tiny" heuristic gone
+ *    (see treev_draw_recursive( )) it is offscreen/behind-only, which is the
+ *    safe half of the test, and it is what makes deep trees usable at all.
+ *  - TreeV label + leaf LOD ON: pure win, invisible at normal zoom.
+ *  - TreeV motion label hiding OFF: the user specifically wants TreeV labels
+ *    readable while rotating/tilting; the size LOD covers most of the cost.
+ *  - MapV motion label hiding ON: measured as a large win there, and MapV
+ *    labels are dense enough that losing them mid-motion is not missed. */
+static boolean treev_cull_flag = TRUE;
+static boolean treev_lod_flag = TRUE;
+static boolean treev_hide_labels_moving_flag = FALSE;
+static boolean mapv_hide_labels_moving_flag = TRUE;
+static boolean perf_flags_initialized = FALSE;
+
+static void
+perf_flags_init( void )
+{
+	if (perf_flags_initialized)
+		return;
+	perf_flags_initialized = TRUE;
+
+	if (g_getenv("FSV_TREEV_NO_CULL") != NULL)
+		treev_cull_flag = FALSE;
+	if (g_getenv("FSV_TREEV_NO_LOD") != NULL)
+		treev_lod_flag = FALSE;
+	if (g_getenv("FSV_TREEV_HIDE_LABELS_MOVING") != NULL)
+		treev_hide_labels_moving_flag = TRUE;
+	if (g_getenv("FSV_MAPV_NO_HIDE_LABELS_MOVING") != NULL)
+		mapv_hide_labels_moving_flag = FALSE;
+}
+
+boolean
+geometry_treev_cull_enabled( void )
+{
+	perf_flags_init( );
+	return treev_cull_flag;
+}
+
+void
+geometry_set_treev_cull( boolean enabled )
+{
+	perf_flags_init( );
+	treev_cull_flag = enabled;
+	redraw( );
+}
+
+boolean
+geometry_treev_lod_enabled( void )
+{
+	perf_flags_init( );
+	return treev_lod_flag;
+}
+
+void
+geometry_set_treev_lod( boolean enabled )
+{
+	perf_flags_init( );
+	treev_lod_flag = enabled;
+	redraw( );
+}
+
+boolean
+geometry_treev_hide_labels_moving( void )
+{
+	perf_flags_init( );
+	return treev_hide_labels_moving_flag;
+}
+
+void
+geometry_set_treev_hide_labels_moving( boolean enabled )
+{
+	perf_flags_init( );
+	treev_hide_labels_moving_flag = enabled;
+	redraw( );
+}
+
+boolean
+geometry_mapv_hide_labels_moving( void )
+{
+	perf_flags_init( );
+	return mapv_hide_labels_moving_flag;
+}
+
+void
+geometry_set_mapv_hide_labels_moving( boolean enabled )
+{
+	perf_flags_init( );
+	mapv_hide_labels_moving_flag = enabled;
+	redraw( );
+}
+
+
+/* Projected-size LOD test for TreeV labels -- see the block comment above
+ * the toggles for the rationale. */
+static boolean
+treev_label_too_small( const RTZvec *pos, double world_size )
+{
+	mat4 mvp;
+	double ang, cs, sn;
+	double c0[4], c1[4];
+	double r1, dx, dy;
+	int k;
+
+	if (!geometry_treev_lod_enabled( ))
+		return FALSE;
+
+	glm_mat4_mul(gl.projection, gl.modelview, mvp);
+
+	ang = RAD(pos->theta);
+	cs = cos(ang);
+	sn = sin(ang);
+	r1 = pos->r + world_size;
+
+	/* Double-precision transform: TreeV r values reach the millions after a
+	 * deep Expand-All, where float32 accumulation loses the sign of w. */
+	for (k = 0; k < 4; k++) {
+		c0[k] = (double)mvp[0][k]*(pos->r*cs) + (double)mvp[1][k]*(pos->r*sn) +
+			(double)mvp[2][k]*pos->z + (double)mvp[3][k];
+		c1[k] = (double)mvp[0][k]*(r1*cs) + (double)mvp[1][k]*(r1*sn) +
+			(double)mvp[2][k]*pos->z + (double)mvp[3][k];
+	}
+
+	/* Behind the camera: not visible, so skipping it is free. */
+	if ((c0[3] <= 0.0001) || (c1[3] <= 0.0001))
+		return TRUE;
+
+	dx = c0[0]/c0[3] - c1[0]/c1[3];
+	dy = c0[1]/c0[3] - c1[1]/c1[3];
+
+	/* ~0.008 NDC is roughly 4 px of text height on a 1080p viewport. */
+	return (sqrt(dx*dx + dy*dy) < 0.008);
 }
 
 
@@ -3294,6 +3521,8 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 		label_pos.r = r0 + TREEV_GEOM_PARAMS(node)->leaf.distance;
 		label_pos.theta = TREEV_GEOM_PARAMS(node)->leaf.theta;
 		label_pos.z = height + TREEV_GEOM_PARAMS(node->parent)->platform.height;
+		if (treev_label_too_small(&label_pos, leaf_label_dims.y))
+			return;
 		text_draw_straight_rotated( NODE_DESC(node)->name, &label_pos, &leaf_label_dims );
 	}
 	else {
@@ -3303,6 +3532,8 @@ treev_apply_label( GNode *node, double r0, boolean is_leaf )
 		label_pos.z = 0.0;
 		platform_label_dims.r = ((2.0 - MAGIC_NUMBER) * TREEV_PLATFORM_SPACING_DEPTH);
 		platform_label_dims.theta = TREEV_GEOM_PARAMS(node)->platform.arc_width - (180.0 * TREEV_PLATFORM_SPACING_WIDTH / PI) / label_pos.r;
+		if (treev_label_too_small(&label_pos, platform_label_dims.r))
+			return;
 		text_draw_curved( NODE_DESC(node)->name, &label_pos, &platform_label_dims );
 	}
 }
@@ -3333,6 +3564,178 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 
 	dir_collapsed = DIR_COLLAPSED(dnode);
         dir_expanded = DIR_EXPANDED(dnode);
+
+	if (!NODE_IS_METANODE(dnode) && !dir_collapsed) {
+		/* Non-destructive diagnostic for the TreeV culling work (see
+		 * backlog) -- enable with FSV_DEBUG_CULL=1. Computes whether this
+		 * node's WHOLE visible subtree -- a polar wedge bounded radially
+		 * by [r0, r0+platform.subtree_max_depth] (already aggregated by
+		 * treev_arrange_recursive( ), no subtree walk needed here) and
+		 * angularly by platform.theta +/- 0.5*MAX(platform.arc_width,
+		 * platform.subtree_arc_width) -- would be considered culled by a
+		 * MapV-style NDC test, WITHOUT skipping anything yet. Sampled at
+		 * both radii and 5 angular fractions across the wedge; tested in
+		 * the incoming (parent) frame, i.e. BEFORE this node's own
+		 * rotation below, matching how MapV tests in its parent's frame.
+		 * Purely for comparing the verdict against what's actually on
+		 * screen, before this is ever wired into an actual skip -- see
+		 * the two 2026-08-31 crashes in the backlog for why that step is
+		 * kept separate and this stays inert until proven correct. */
+		static int treev_debug_cull = -1;
+		if (treev_debug_cull < 0)
+			treev_debug_cull = (g_getenv("FSV_DEBUG_CULL") != NULL);
+		if (treev_debug_cull || geometry_treev_cull_enabled( )) {
+			boolean would_cull = FALSE;
+			/* Angular half-extent, with a safety margin: arc_width and
+			 * subtree_arc_width describe the platform, but branches and
+			 * labels reach slightly outside it. */
+			double half_width = 0.6 * MAX(dir_gparams->platform.arc_width,
+						       dir_gparams->platform.subtree_arc_width);
+			/* Radial extent must cover BOTH this platform's own leaf rows
+			 * (platform.depth) and everything aggregated below it
+			 * (subtree_max_depth) -- taking only the latter made the wedge
+			 * radially degenerate for directories whose subtree is shallow,
+			 * which is one half of the 2026-09-17 "items at a certain
+			 * distance from the parent vanish" report. */
+			double r_outer = r0 + MAX(dir_gparams->platform.subtree_max_depth,
+						  dir_gparams->platform.depth)
+					    + TREEV_PLATFORM_SPACING_DEPTH;
+			mat4 mvp;
+			boolean any_in_front = FALSE;
+			boolean any_behind = FALSE;
+			float ndc_x0 = 1.0e9f, ndc_x1 = -1.0e9f;
+			float ndc_y0 = 1.0e9f, ndc_y1 = -1.0e9f;
+			int smp;
+			/* Angular sample COUNT scales with half_width (added 2026-09-17,
+			 * fixing the "items vanish 4x per 360-degree rotate" report).
+			 * A fixed 5 samples is fine for an ordinary platform's own
+			 * modest arc, but an ancestor close to the root can have a
+			 * half_width approaching 180 degrees (many top-level siblings).
+			 * With only 5 samples spread across such a wide arc, the actual
+			 * near-clip / behind-camera boundary can fall entirely BETWEEN
+			 * two adjacent samples as the camera orbits -- every sample
+			 * reports "behind", any_in_front stays FALSE, and the whole
+			 * subtree (everything under that ancestor, not just the wide
+			 * node itself) gets wrongly culled, at specific camera angles
+			 * that recur as the camera completes a rotation. Capping the
+			 * angular step at ~12 degrees closes that gap; the sample count
+			 * is still capped so a pathological arc cannot blow up the cost. */
+			int n_samples = (int)MIN(MAX((2.0 * half_width) / 12.0 + 1.0, 5.0), 61.0);
+
+			glm_mat4_mul(gl.projection, tmpmat, mvp);
+
+			for (smp = 0; smp < n_samples; smp++) {
+				double frac = (n_samples == 1) ? 0.0 :
+					(-1.0 + 2.0 * smp / (double)(n_samples - 1));
+				double ang = (dir_gparams->platform.theta + frac * half_width) * M_PI / 180.0;
+				double cs = cos(ang), sn = sin(ang);
+				double rr[2];
+				double zz[2];
+				int j, zi;
+				rr[0] = r0;
+				rr[1] = r_outer;
+				/* Sample the wedge's vertical extent too, not just the
+				 * z=0 plane. TreeV is viewed at a tilt, so a flat z=0
+				 * wedge projects to a near-degenerate sliver at shallow
+				 * tilt angles while the actual towers above it are plainly
+				 * visible -- the other half of the 2026-09-17 vanishing
+				 * report. The upper bound is deliberately generous: an
+				 * over-tall box only ever makes the cull more
+				 * conservative. */
+				zz[0] = 0.0;
+				zz[1] = dir_gparams->platform.height + 8.0 * TREEV_LEAF_NODE_EDGE;
+				for (j = 0; j < 2; j++)
+				for (zi = 0; zi < 2; zi++) {
+					/* Manual double-precision transform instead of
+					 * glm_mat4_mulv( ) (which multiplies/accumulates in
+					 * float32). At TreeV's typical r0 scale after a deep
+					 * Expand-All chain (millions), the float accumulation
+					 * loses enough precision to spuriously flip clip.w's
+					 * sign, making all_in_front FALSE for essentially every
+					 * node -- observed 2026-09-16 on a 54k-item tree (100%
+					 * "NOT all_in_front", so the cull test never fired and
+					 * gave zero FPS benefit). mvp itself is still float --
+					 * that's what the renderer actually uses -- but doing
+					 * just this dot product in double keeps the test usable
+					 * at the magnitudes TreeV can reach. */
+					double px = rr[j]*cs, py = rr[j]*sn;
+					double clip[4];
+					int k;
+					for (k = 0; k < 4; k++)
+						clip[k] = (double)mvp[0][k]*px + (double)mvp[1][k]*py +
+							  (double)mvp[2][k]*zz[zi] + (double)mvp[3][k];
+					if (clip[3] <= 0.0001) {
+						any_behind = TRUE;
+						continue;
+					}
+					any_in_front = TRUE;
+					ndc_x0 = MIN(ndc_x0, (float)(clip[0]/clip[3]));
+					ndc_x1 = MAX(ndc_x1, (float)(clip[0]/clip[3]));
+					ndc_y0 = MIN(ndc_y0, (float)(clip[1]/clip[3]));
+					ndc_y1 = MAX(ndc_y1, (float)(clip[1]/clip[3]));
+				}
+			}
+
+			if (!any_in_front) {
+				/* All 10 sampled corners are behind the camera plane.
+				 * Unlike a mixed result (below) this is unambiguous -- the
+				 * whole wedge is behind the camera -- so it is safe to cull.
+				 * Added 2026-09-17 after finding that ~96% of a wide,
+				 * deeply-nested sibling group (a hex-fanout directory with
+				 * hundreds of siblings spread over a huge arc) fell into the
+				 * old catch-all "not all in front" branch and was never
+				 * culled even though it sat entirely behind the camera --
+				 * the actual reason FPS did not improve when fully zoomed
+				 * into a single item. */
+				would_cull = TRUE;
+				if (treev_debug_cull)
+					g_print("treev_cull_diag: %s r0=%.6g r_outer=%.6g theta=%.6g "
+						"half_width=%.6g fully behind camera -- would_cull=1\n",
+						NODE_DESC(dnode)->name, r0, r_outer,
+						dir_gparams->platform.theta, half_width);
+			} else if (any_behind) {
+				/* Mixed: some sampled corners in front, some behind -- most
+				 * likely straddling the near-clip plane, or a very wide
+				 * wedge partly wrapping behind the camera. Stay
+				 * conservative, exactly as before. */
+				if (treev_debug_cull)
+					g_print("treev_cull_diag: %s r0=%.6g r_outer=%.6g theta=%.6g "
+						"half_width=%.6g mixed front/behind -- would_cull=0\n",
+						NODE_DESC(dnode)->name, r0, r_outer,
+						dir_gparams->platform.theta, half_width);
+			} else {
+				/* Offscreen-only. The old "tiny" rule (cull anything whose
+				 * projected box is very thin or small) was REMOVED on
+				 * 2026-09-17: a wedge seen nearly edge-on at certain tilt
+				 * angles projects to an arbitrarily thin sliver while its
+				 * geometry is fully visible, so that rule silently deleted
+				 * real content -- exactly the failure mode the backlog
+				 * warns about twice. Size-based savings now come from the
+				 * per-label LOD instead, which can only drop unreadable
+				 * text, never geometry.
+				 *
+				 * The margin keeps a subtree alive slightly past the
+				 * viewport edge, since the sampled wedge is an
+				 * approximation of a curved region. */
+				static const float margin = 0.15f;
+				boolean offscreen = (ndc_x1 < -1.0f - margin) ||
+						     (ndc_x0 >  1.0f + margin) ||
+						     (ndc_y1 < -1.0f - margin) ||
+						     (ndc_y0 >  1.0f + margin);
+				would_cull = offscreen;
+				if (treev_debug_cull)
+					g_print("treev_cull_diag: %s r0=%.6g r_outer=%.6g theta=%.6g "
+						"half_width=%.6g ndc=[%.4g,%.4g]x[%.4g,%.4g] "
+						"would_cull=%d (offscreen=%d)\n",
+						NODE_DESC(dnode)->name, r0, r_outer,
+						dir_gparams->platform.theta, half_width,
+						ndc_x0, ndc_x1, ndc_y0, ndc_y1,
+						(int)would_cull, (int)offscreen);
+			}
+			if (geometry_treev_cull_enabled( ))
+				subtree_culled = would_cull;
+		}
+	}
 
 	if (!dir_collapsed) {
 		if (!dir_expanded) {

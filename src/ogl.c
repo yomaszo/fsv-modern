@@ -532,11 +532,25 @@ render(GtkGLArea *area, GdkGLContext *context)
 	 * always be drawn regardless of camera state. Scroll-wheel zoom never
 	 * counts as "moving" here (camera_dolly( ) doesn't set the moving
 	 * flag), so it already got full detail in every mode before this. */
+	/* Motion-based detail reduction is now per-mode and runtime-toggled
+	 * from the Help menu (geometry_{mapv,treev}_hide_labels_moving( )).
+	 * MapV defaults to ON -- it was measured as a large win there. TreeV
+	 * defaults to OFF, because its labels should stay readable while
+	 * rotating/tilting; TreeV instead gets a projected-size label LOD.
+	 * Scroll-wheel zoom never counts as "moving" here (camera_dolly( )
+	 * does not set the moving flag), so it always gets full detail. */
 	{
-		boolean high_detail = !camera_moving( ) && !viewport_camera_dragging( );
+		boolean moving = camera_moving( ) || viewport_camera_dragging( );
+		boolean hide = FALSE;
+
 		if (globals.fsv_mode == FSV_TREEV)
-			high_detail = TRUE;
-		geometry_draw( high_detail );
+			hide = geometry_treev_hide_labels_moving( );
+		else if (globals.fsv_mode == FSV_MAPV)
+			hide = geometry_mapv_hide_labels_moving( );
+		else
+			hide = TRUE; /* DiscV/splash: unchanged legacy behaviour */
+
+		geometry_draw( !(moving && hide) );
 	}
 
 	/* Error check */
