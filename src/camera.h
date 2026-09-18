@@ -22,7 +22,6 @@
 
 /* Camera type casts */
 #define CAMERA(cam)		((Camera *)(cam))
-#define DISCV_CAMERA(cam)	((DiscVCamera *)(cam))
 #define MAPV_CAMERA(cam)	((MapVCamera *)(cam))
 #define TREEV_CAMERA(cam)	((TreeVCamera *)(cam))
 
@@ -38,13 +37,6 @@ struct _Camera {
 	double	far_clip;
 	double	pan_part;	/* Camera pan fraction (always in [0, 1]) */
 	boolean	manual_control;	/* TRUE when camera is under manual control */
-};
-
-/* DiscV mode camera */
-typedef struct _DiscVCamera DiscVCamera;
-struct _DiscVCamera {
-	Camera	camera;
-	XYvec	target;
 };
 
 /* MapV mode camera */
@@ -64,7 +56,6 @@ struct _TreeVCamera {
 /* Generalized camera type */
 union AnyCamera {
 	Camera		camera;
-	DiscVCamera	discv_camera;
 	MapVCamera	mapv_camera;
 	TreeVCamera	treev_camera;
 };

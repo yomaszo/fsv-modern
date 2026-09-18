@@ -21,7 +21,6 @@
 
 
 /* Duration of a single collapse/expansion (in seconds) */
-#define DISCV_COLEXP_TIME	1.5
 #define MAPV_COLEXP_TIME	0.375
 #define TREEV_COLEXP_TIME	0.5
 
@@ -161,10 +160,6 @@ colexp( GNode *dnode, ColExpMesg mesg )
 
 		/* Collapse/expand time for current visualization mode */
 		switch (globals.fsv_mode) {
-			case FSV_DISCV:
-			colexp_time = DISCV_COLEXP_TIME;
-			break;
-
 			case FSV_MAPV:
 			colexp_time = MAPV_COLEXP_TIME;
 			break;

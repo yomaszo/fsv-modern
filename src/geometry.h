@@ -20,7 +20,6 @@
 #define TREEV_LEAF_NODE_EDGE		256.0
 #define TREEV_PLATFORM_SPACING_DEPTH	2048.0
 
-#define DISCV_GEOM_PARAMS(node)		((DiscVGeomParams *)(NODE_DESC(node)->geomparams))
 #define MAPV_GEOM_PARAMS(node)		((MapVGeomParams *)(NODE_DESC(node)->geomparams))
 #define TREEV_GEOM_PARAMS(node)		((TreeVGeomParams *)(NODE_DESC(node)->geomparams))
 
@@ -29,15 +28,6 @@
 #define MAPV_NODE_CENTER_X(node)	(0.5 * (MAPV_GEOM_PARAMS(node)->c0.x + MAPV_GEOM_PARAMS(node)->c1.x))
 #define MAPV_NODE_CENTER_Y(node)	(0.5 * (MAPV_GEOM_PARAMS(node)->c0.y + MAPV_GEOM_PARAMS(node)->c1.y))
 
-
-/* Geometry parameters for a node in DiscV mode */
-typedef struct _DiscVGeomParams DiscVGeomParams;
-struct _DiscVGeomParams {
-	/* WORK IN PROGRESS */
-	double	radius;	/* Radius of node disc */
-	double	theta;	/* Angle position on parent disc */
-	XYvec	pos;	/* Center of disc w.r.t. center of parent (derived) */
-};
 
 /* Geometry parameters for a node in MapV mode */
 typedef struct _MapVGeomParams MapVGeomParams;
@@ -84,7 +74,6 @@ struct _TreeVGeomParams {
 };
 
 
-XYvec *geometry_discv_node_pos( GNode *node );
 double geometry_mapv_node_z0( GNode *node );
 double geometry_mapv_max_expanded_height( GNode *dnode );
 boolean geometry_treev_is_leaf( GNode *node );

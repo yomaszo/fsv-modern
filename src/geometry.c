@@ -207,356 +207,6 @@ drawVertex(GLenum mode, Vertex *vert, size_t vert_cnt, const RGBcolor *color, GN
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-/**** DISC VISUALIZATION **************************************/
-
-
-/* Geometry constants */
-#define DISCV_CURVE_GRANULARITY		15.0
-#define DISCV_LEAF_RANGE_ARC_WIDTH	315.0
-#define DISCV_LEAF_STEM_PROPORTION	0.5
-
-/* Messages for discv_draw_recursive( ) */
-enum {
-	DISCV_DRAW_GEOMETRY,
-	DISCV_DRAW_LABELS
-};
-
-
-/* Returns the absolute position of the given node */
-XYvec *
-geometry_discv_node_pos( GNode *node )
-{
-	static XYvec pos;
-	DiscVGeomParams *gparams;
-	GNode *up_node;
-
-	pos.x = 0.0;
-	pos.y = 0.0;
-	up_node = node;
-	while (up_node != NULL) {
-		gparams = DISCV_GEOM_PARAMS(up_node);
-		pos.x += gparams->pos.x;
-		pos.y += gparams->pos.y;
-		up_node = up_node->parent;
-	}
-
-	return &pos;
-}
-
-
-/* Compare function for sorting nodes (by size) */
-static int
-discv_node_compare( GNode *a, GNode *b )
-{
-	int64 a_size, b_size;
-
-	a_size = NODE_DESC(a)->size;
-	if (NODE_IS_DIR(a))
-		a_size += DIR_NODE_DESC(a)->subtree.size;
-
-	b_size = NODE_DESC(b)->size;
-	if (NODE_IS_DIR(b))
-		b_size += DIR_NODE_DESC(b)->subtree.size;
-
-	if (a_size < b_size)
-		return 1;
-	if (a_size > b_size)
-		return -1;
-
-	return strcmp( NODE_DESC(a)->name, NODE_DESC(b)->name );
-}
-
-
-/* Helper function for discv_init( ) */
-static void
-discv_init_recursive( GNode *dnode, double stem_theta )
-{
-	DiscVGeomParams *gparams;
-	GNode *node;
-	GList *node_list = NULL, *nl_llink;
-	int64 node_size;
-	double dir_radius, radius, dist;
-	double arc_width, total_arc_width = 0.0;
-	double theta0, theta1;
-	double k;
-	boolean even = TRUE;
-	boolean stagger, out = TRUE;
-
-	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
-
-	if (NODE_IS_DIR(dnode)) {
-		morph_break( &DIR_NODE_DESC(dnode)->deployment );
-		if (dirtree_entry_expanded( dnode ) ||
-		    (!dirtree_entry_has_subdir( dnode ) && (DIR_NODE_DESC(dnode)->deployment > (1.0 - EPSILON))))
-			DIR_NODE_DESC(dnode)->deployment = 1.0;
-		else
-			DIR_NODE_DESC(dnode)->deployment = 0.0;
-		geometry_queue_rebuild( dnode );
-	}
-
-	/* If this directory has no children,
-	 * there is nothing further to do here */
-	if (dnode->children == NULL)
-		return;
-
-	dir_radius = DISCV_GEOM_PARAMS(dnode)->radius;
-
-	/* Assign radii (and arc widths, temporarily) to leaf nodes */
-	node = dnode->children;
-	while (node != NULL) {
-		node_size = MAX(64, NODE_DESC(node)->size);
-                if (NODE_IS_DIR(node))
-			node_size += DIR_NODE_DESC(node)->subtree.size;
-		/* Area of disc == node_size */
-		radius = sqrt( (double)node_size / PI );
-		/* Center-to-center distance (parent to leaf) */
-		dist = dir_radius + radius * (1.0 + DISCV_LEAF_STEM_PROPORTION);
-		arc_width = 2.0 * DEG(asin( radius / dist ));
-		gparams = DISCV_GEOM_PARAMS(node);
-		gparams->radius = radius;
-		gparams->theta = arc_width; /* temporary value */
-		gparams->pos.x = dist; /* temporary value */
-		total_arc_width += arc_width;
-		node = node->next;
-	}
-
-	/* Create a list of leaf nodes, sorted by size */
-	node = dnode->children;
-	while (node != NULL) {
-		G_LIST_PREPEND(node_list, node);
-		node = node->next;
-	}
-	G_LIST_SORT(node_list, discv_node_compare);
-
-	k = DISCV_LEAF_RANGE_ARC_WIDTH / total_arc_width;
-	/* If this is going to be a tight fit, stagger the leaf nodes */
-	stagger = k <= 1.0;
-
-	/* Assign angle positions to leaf nodes, arranging them in clockwise
-	 * order (spread out to occupy the entire available range), and
-	 * recurse into subdirectories */
-	theta0 = stem_theta - 180.0;
-	theta1 = stem_theta + 180.0;
-	nl_llink = node_list;
-	while (nl_llink != NULL) {
-		node = nl_llink->data;
-		gparams = DISCV_GEOM_PARAMS(node);
-		arc_width = k * gparams->theta;
-		dist = gparams->pos.x;
-		if (stagger && out) {
-			/* Push leaf out */
-			dist += 2.0 * gparams->radius;
-		}
-		if (nl_llink->prev == NULL) {
-			/* First (largest) node */
-			gparams->theta = theta0;
-			theta0 += 0.5 * arc_width;
-			theta1 -= 0.5 * arc_width;
-			out = !out;
-		}
-		else if (even) {
-			gparams->theta = theta0 + 0.5 * arc_width;
-			theta0 += arc_width;
-			out = !out;
-		}
-		else {
-			gparams->theta = theta1 - 0.5 * arc_width;
-			theta1 -= arc_width;
-		}
-		gparams->pos.x = dist * cos( RAD(gparams->theta) );
-		gparams->pos.y = dist * sin( RAD(gparams->theta) );
-		if (NODE_IS_DIR(node))
-			discv_init_recursive( node, gparams->theta + 180.0 );
-		even = !even;
-		nl_llink = nl_llink->next;
-	}
-
-	g_list_free( node_list );
-}
-
-
-static void
-discv_init( void )
-{
-	DiscVGeomParams *gparams;
-
-	gparams = DISCV_GEOM_PARAMS(globals.fstree);
-	gparams->radius = 0.0;
-	gparams->theta = 0.0;
-
-	discv_init_recursive( globals.fstree, 270.0 );
-
-	gparams->pos.x = 0.0;
-	gparams->pos.y = - DISCV_GEOM_PARAMS(root_dnode)->radius;
-
-	/* DiscV mode is entirely 2D, normal should always be {0, 0, 1} */
-}
-
-
-/* Draws a DiscV node. dir_deployment is deployment of parent directory */
-static void
-discv_gldraw_node( GNode *node, double dir_deployment )
-{
-	static const int seg_count = (int)(360.0 / DISCV_CURVE_GRANULARITY + 0.999);
-	DiscVGeomParams *gparams;
-	XYvec center, p;
-	double theta;
-	int s;
-
-	gparams = DISCV_GEOM_PARAMS(node);
-
-	center.x = dir_deployment * gparams->pos.x;
-	center.y = dir_deployment * gparams->pos.y;
-
-	/* Draw disc */
-	size_t vert_cnt = seg_count + 2;
-	Vertex *vert = NEW_ARRAY(Vertex, vert_cnt);
-	vert[0] = (Vertex){{center.x, center.y, 0}, {0, 0, 1}};
-	for (s = 0; s <= seg_count; s++) {
-		theta = (double)s / (double)seg_count * 360.0;
-		p.x = center.x + gparams->radius * cos( RAD(theta) );
-		p.y = center.y + gparams->radius * sin( RAD(theta) );
-		vert[s + 1] = (Vertex){{p.x, p.y, 0}, {0, 0, 1}};
-	}
-	drawVertex(GL_TRIANGLE_FAN, vert, vert_cnt, NULL, node);
-	xfree(vert);
-}
-
-
-static void
-discv_gldraw_folder( GNode *node )
-{
-
-	/* To be written... */
-
-}
-
-
-/* Builds the leaf nodes of a directory (but not the directory itself--
- * that geometry belongs to the parent) */
-static void
-discv_build_dir( GNode *dnode )
-{
-	GNode *node;
-	double dpm;
-
-	dpm = DIR_NODE_DESC(dnode)->deployment;
-	/* TODO: Fix this, please */
-	dpm = 1.0;
-
-	node = dnode->children;
-	while (node != NULL) {
-		discv_gldraw_node( node, dpm );
-		node = node->next;
-	}
-}
-
-
-static void
-discv_apply_label( GNode *node )
-{
-
-}
-
-
-/* Helper function for discv_draw( ) */
-static void
-discv_draw_recursive( GNode *dnode, int action )
-{
-	DirNodeDesc *dir_ndesc;
-	DiscVGeomParams *dir_gparams;
-	GNode *node;
-	boolean dir_collapsed;
-	boolean dir_expanded;
-
-	dir_ndesc = DIR_NODE_DESC(dnode);
-	dir_gparams = DISCV_GEOM_PARAMS(dnode);
-
-	mat4 tmpmat;
-	glm_mat4_copy(gl.modelview, tmpmat);
-
-	dir_collapsed = DIR_COLLAPSED(dnode);
-	dir_expanded = DIR_EXPANDED(dnode);
-
-	glm_translate(gl.modelview, (vec3){dir_gparams->pos.x, dir_gparams->pos.y, 0.0});
-	glm_scale(gl.modelview, (vec3){dir_ndesc->deployment,  dir_ndesc->deployment,  1.0f});
-	ogl_upload_matrices(TRUE);
-
-	if (action == DISCV_DRAW_GEOMETRY) {
-		/* Draw folder or leaf nodes */
-		if (!dir_collapsed)
-			discv_build_dir(dnode);
-		if (!dir_expanded)
-			discv_gldraw_folder(dnode);
-	}
-
-	if (action == DISCV_DRAW_LABELS) {
-		/* Draw name label(s) */
-
-		/* Label leaf nodes */
-		node = dnode->children;
-		while (node != NULL)
-		{
-			discv_apply_label(node);
-			node = node->next;
-		}
-	}
-
-	/* Update geometry status */
-	dir_ndesc->geom_expanded = !dir_collapsed;
-
-	if (dir_expanded) {
-		/* Recurse into subdirectories */
-		node = dnode->children;
-		while (node != NULL) {
-                        if (!NODE_IS_DIR(node))
-				break;
-			discv_draw_recursive( node, action );
-			node = node->next;
-		}
-	}
-
-	glm_mat4_copy(tmpmat, gl.modelview);
-}
-
-
-/* Draws DiscV geometry */
-static void
-discv_draw( boolean high_detail )
-{
-	glLineWidth( 3.0 );
-
-	/* Draw low-detail geometry */
-
-	discv_draw_recursive( globals.fstree, DISCV_DRAW_GEOMETRY );
-
-	/* See treev_draw( ) for why this must not run for SELECT-mode
-	 * (node-picking) calls -- only a genuine on-screen render may
-	 * advance the shared draw-stage counters. */
-	if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_low_draw_stage <= 1))
-		++fstree_low_draw_stage;
-
-
-	if (high_detail) {
-		/* Draw additional high-detail geometry */
-
-		if (fstree_high_draw_stage <= 1) {
-			/* Node name labels */
-			text_pre( );
-			text_set_color(0.0, 0.0, 0.0);
-			discv_draw_recursive( globals.fstree, DISCV_DRAW_LABELS );
-			text_post( );
-		}
-		if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_high_draw_stage <= 1))
-			++fstree_high_draw_stage;
-
-		/* Node cursor */
-		/* draw_cursor( ); */
-	}
-
-	glLineWidth( 1.0 );
-}
-
 
 /**** MAP VISUALIZATION ***************************************/
 
@@ -4129,10 +3779,6 @@ geometry_init( FsvMode mode )
 	geometry_queue_rebuild( globals.fstree );
 
 	switch (mode) {
-		case FSV_DISCV:
-		discv_init( );
-		break;
-
 		case FSV_MAPV:
 		mapv_init( );
 		break;
@@ -4443,10 +4089,6 @@ geometry_draw( boolean high_detail )
 		splash_draw( );
 		break;
 
-		case FSV_DISCV:
-		discv_draw( high_detail );
-		break;
-
 		case FSV_MAPV:
 		mapv_draw( high_detail );
 		break;
@@ -4465,10 +4107,6 @@ void
 geometry_camera_pan_finished( void )
 {
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		/* discv_camera_pan_finished( ); */
-		break;
-
 		case FSV_MAPV:
 		mapv_camera_pan_finished( );
 		break;
@@ -4525,9 +4163,6 @@ geometry_should_highlight(GNode *node)
 		return TRUE;
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		return TRUE;
-
 		case FSV_MAPV:
 		return DIR_COLLAPSED(node);
 
@@ -4549,10 +4184,6 @@ draw_node( GNode *node )
 	glm_mat4_copy(gl.modelview, tmpmat);
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		/* TODO: code to draw single discv node goes HERE */
-		break;
-
 		case FSV_MAPV:
 		glm_translate(gl.modelview, (vec3){0.0f, 0.0f, geometry_mapv_node_z0(node)});
 		ogl_upload_matrices(TRUE);

@@ -113,11 +113,7 @@ window_init(GtkApplication *app, gpointer user_data)
 	/* Vis menu */
 	menu_w = gui_menu_add( menu_bar_w, _("Vis") );
 	/* Vis menu items */
-	gui_radio_menu_begin( fsv_mode -1 );
-#if 0 /* DiscV mode needs more work */
-	gui_radio_menu_item_add( menu_w, _("DiscV"), on_vis_discv_activate, NULL );
-/* Note: don't forget to remove the "-1" three lines up */
-#endif
+	gui_radio_menu_begin( fsv_mode );
 	gui_radio_menu_item_add( menu_w, _("MapV"), on_vis_mapv_activate, NULL );
 	/* Note: TreeV is currently very slow/unresponsive on large
 	 * directories (tens of thousands of entries) -- 'Expand All' on

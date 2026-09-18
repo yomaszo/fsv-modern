@@ -29,7 +29,6 @@
 
 /* Identifiers for command-line options */
 enum {
-	OPT_DISCV,
 	OPT_MAPV,
 	OPT_TREEV,
 	OPT_CACHEDIR,
@@ -43,7 +42,6 @@ static FsvMode initial_fsv_mode = FSV_MAPV;
 
 /* Command-line options */
 static struct option cli_opts[] = {
-	{ "discv", no_argument, NULL, OPT_DISCV },
 	{ "mapv", no_argument, NULL, OPT_MAPV },
 	{ "treev", no_argument, NULL, OPT_TREEV },
 	{ "cachedir", required_argument, NULL, OPT_CACHEDIR },
@@ -229,11 +227,6 @@ main( int argc, char **argv )
 		if (opt_id < 0)
 			break;
 		switch (opt_id) {
-			case OPT_DISCV:
-			/* --discv */
-			initial_fsv_mode = FSV_DISCV;
-			break;
-
 			case OPT_MAPV:
 			/* --mapv */
 			initial_fsv_mode = FSV_MAPV;

@@ -121,7 +121,6 @@ typedef gboolean boolean;
 
 /* Program modes */
 typedef enum {
-	FSV_DISCV,
 	FSV_MAPV,
 	FSV_TREEV,
 	FSV_SPLASH,

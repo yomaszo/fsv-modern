@@ -25,8 +25,6 @@
 
 
 /* Lower/upper bounds on pan times (in seconds) */
-#define DISCV_CAMERA_MIN_PAN_TIME	0.5
-#define DISCV_CAMERA_MAX_PAN_TIME	3.0
 #define MAPV_CAMERA_MIN_PAN_TIME	0.5
 #define MAPV_CAMERA_MAX_PAN_TIME	4.0
 #define TREEV_CAMERA_MIN_PAN_TIME	1.0
@@ -109,22 +107,6 @@ camera_init( FsvMode mode, boolean initial_view )
 	camera->fov = 60.0;
 	camera->pan_part = 1.0;
 	switch (mode) {
-		case FSV_DISCV:
-		d = field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(root_dnode)->radius );
-		if (initial_view) {
-			camera->distance = 2.0 * d;
-			DISCV_CAMERA(camera)->target.x = 0.0;
-			DISCV_CAMERA(camera)->target.y = 0.0;
-		}
-		else {
-			camera->distance = 3.0 * d;
-			DISCV_CAMERA(camera)->target.x = 0.0;
-			DISCV_CAMERA(camera)->target.y = 0.0;
-		}
-		camera->near_clip = 0.9375 * camera->distance;
-		camera->far_clip = 1.0625 * camera->distance;
-		break;
-
 		case FSV_MAPV:
 		d1 = field_distance( camera->fov, MAPV_NODE_WIDTH(root_dnode) );
 		d2 = MAPV_GEOM_PARAMS(root_dnode)->height + geometry_mapv_max_expanded_height( root_dnode );
@@ -231,26 +213,6 @@ treev_camera_theta( double target_theta, GNode *target_node )
 
 /* Helper function for camera_scrollbar_move_cb( ) */
 static void
-discv_scrollbar_move( double value, int axis )
-{
-	switch (axis) {
-		case X_AXIS:
-		/* ????? */
-		DISCV_CAMERA(camera)->target.x = value;
-		break;
-
-		case Y_AXIS:
-		/* ????? */
-		DISCV_CAMERA(camera)->target.y = value;
-		break;
-
-		SWITCH_FAIL
-	}
-}
-
-
-/* Helper function for camera_scrollbar_move_cb( ) */
-static void
 mapv_scrollbar_move( double value, int axis )
 {
 	switch (axis) {
@@ -322,9 +284,6 @@ camera_scrollbar_move_cb( GtkAdjustment *adj, const char *mesg )
 	}
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		discv_scrollbar_move( value, axis );
-		break;
 		case FSV_MAPV:
 		mapv_scrollbar_move( value, axis );
 		break;
@@ -369,19 +328,6 @@ null_get_scrollbar_states( GtkAdjustment *x_adj, GtkAdjustment *y_adj )
 	gtk_adjustment_set_page_increment(x_adj, 0.0);
 	gtk_adjustment_set_page_size(x_adj, 100.0);
         *y_adj = *x_adj; /* struct assign */
-}
-
-
-/* This produces the exact state the viewport scrollbars should have in
- * DiscV mode, given the current camera state and current node */
-static void
-discv_get_scrollbar_states( GtkAdjustment *x_adj, GtkAdjustment *y_adj )
-{
-
-	/* TODO: To be implemented... */
-
-	*x_adj = *x_scrollbar_adj; /* struct assign */
-	*y_adj = *y_scrollbar_adj; /* struct assign */
 }
 
 
@@ -598,10 +544,6 @@ camera_update_scrollbars( boolean hard_update )
 		null_get_scrollbar_states(x_adj, y_adj);
 		break;
 
-		case FSV_DISCV:
-		discv_get_scrollbar_states(x_adj, y_adj);
-		break;
-
 		case FSV_MAPV:
 		mapv_get_scrollbar_states(x_adj, y_adj);
 		break;
@@ -670,11 +612,6 @@ camera_pan_finish( void )
 	morph_finish( &camera->pan_part );
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		morph_finish( &DISCV_CAMERA(camera)->target.x );
-		morph_finish( &DISCV_CAMERA(camera)->target.y );
-		break;
-
 		case FSV_MAPV:
 		morph_finish( &MAPV_CAMERA(camera)->target.x );
 		morph_finish( &MAPV_CAMERA(camera)->target.y );
@@ -709,11 +646,6 @@ camera_pan_break( void )
 	morph_break( &camera->pan_part );
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		morph_break( &DISCV_CAMERA(camera)->target.x );
-		morph_break( &DISCV_CAMERA(camera)->target.y );
-		break;
-
 		case FSV_MAPV:
 		morph_break( &MAPV_CAMERA(camera)->target.x );
 		morph_break( &MAPV_CAMERA(camera)->target.y );
@@ -731,51 +663,6 @@ camera_pan_break( void )
 		return;
 		SWITCH_FAIL
 	}
-}
-
-
-/* Helper function for camera_look_at_full( ) */
-static double
-discv_look_at( GNode *node, MorphType mtype, double pan_time_override )
-{
-	DiscVCamera new_dcam;
-	Camera *new_cam;
-	XYvec *node_pos;
-	double pan_time;
-
-	new_cam = CAMERA(&new_dcam);
-
-	/* Construct desired camera state */
-
-	/* Distance from target point */
-	new_cam->distance = 2.0 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(node)->radius );
-
-	/* Clipping plane distances */
-	new_cam->near_clip = 0.9375 * new_cam->distance;
-	new_cam->far_clip = 1.0625 * new_cam->distance;
-
-	/* Target point */
-	node_pos = geometry_discv_node_pos( node );
-	DISCV_CAMERA(new_cam)->target.x = node_pos->x;
-	DISCV_CAMERA(new_cam)->target.y = node_pos->y;
-
-	/* Duration of pan */
-	if (pan_time_override > 0.0)
-		pan_time = pan_time_override;
-	else {
-/* TODO: write a *real* pan_time function here */
-		pan_time = 2.0;
-		/*pan_time = CLAMP(k, DISCV_CAMERA_MIN_PAN_TIME, DISCV_CAMERA_MAX_PAN_TIME);*/
-	}
-
-	/* Get the camera moving */
-	morph( &camera->distance, mtype, new_cam->distance, pan_time );
-	morph( &camera->near_clip, mtype, new_cam->near_clip, pan_time );
-	morph( &camera->far_clip, mtype, new_cam->far_clip, pan_time );
-	morph( &DISCV_CAMERA(camera)->target.x, mtype, DISCV_CAMERA(new_cam)->target.x, pan_time );
-	morph( &DISCV_CAMERA(camera)->target.y, mtype, DISCV_CAMERA(new_cam)->target.y, pan_time );
-
-	return pan_time;
 }
 
 
@@ -1151,10 +1038,6 @@ camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override )
 	camera_pan_break( );
 
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		pan_time = discv_look_at( node, mtype, pan_time_override );
-		break;
-
 		case FSV_MAPV:
 		pan_time = mapv_look_at( node, mtype, pan_time_override );
 		break;
@@ -1342,10 +1225,6 @@ camera_birdseye_view( boolean going_up )
 
 	/* Determine length of pan */
 	switch (globals.fsv_mode) {
-		case FSV_DISCV:
-		pan_time = DISCV_CAMERA_MAX_PAN_TIME;
-		break;
-
 		case FSV_MAPV:
 		pan_time = MAPV_CAMERA_MAX_PAN_TIME;
 		break;
@@ -1364,16 +1243,6 @@ camera_birdseye_view( boolean going_up )
 		/* Build bird's-eye view */
 		new_cam->phi = 90.0;
 		switch (globals.fsv_mode) {
-			case FSV_DISCV:
-			/* DiscV is a flat top-down view with no heading concept
-			 * elsewhere in the code -- keep the current heading
-			 * unchanged rather than leaving new_cam->theta
-			 * uninitialized (it's unconditionally used in the
-			 * morph( &camera->theta, ... ) call below) */
-			new_cam->theta = camera->theta;
-			new_cam->distance = 2.0 * field_distance( camera->fov, 2.0 * DISCV_GEOM_PARAMS(root_dnode)->radius );
-			break;
-
 			case FSV_MAPV:
 			new_cam->theta = 270.0;
 			new_cam->distance = field_distance( camera->fov, MAPV_NODE_WIDTH(root_dnode) );
@@ -1411,11 +1280,6 @@ camera_birdseye_view( boolean going_up )
 		morph( &camera->far_clip, MORPH_SIGMOID, pre_cam->far_clip, pan_time );
 
 		switch (globals.fsv_mode) {
-			case FSV_DISCV:
-			morph( &DISCV_CAMERA(camera)->target.x, MORPH_SIGMOID, DISCV_CAMERA(pre_cam)->target.x, pan_time );
-			morph( &DISCV_CAMERA(camera)->target.y, MORPH_SIGMOID, DISCV_CAMERA(pre_cam)->target.y, pan_time );
-			break;
-
 			case FSV_MAPV:
 			morph( &MAPV_CAMERA(camera)->target.x, MORPH_SIGMOID, MAPV_CAMERA(pre_cam)->target.x, pan_time );
 			morph( &MAPV_CAMERA(camera)->target.y, MORPH_SIGMOID, MAPV_CAMERA(pre_cam)->target.y, pan_time );

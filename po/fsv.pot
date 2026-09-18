@@ -510,10 +510,6 @@ msgstr ""
 msgid "Vis"
 msgstr ""
 
-#: src/window.c:130
-msgid "DiscV"
-msgstr ""
-
 #: src/window.c:133
 msgid "MapV"
 msgstr ""

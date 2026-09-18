@@ -290,15 +290,6 @@ setup_modelview_matrix( void )
 		case FSV_SPLASH:
 		break;
 
-		case FSV_DISCV:
-		glm_translate(gl.modelview, (vec3){-camera->distance, 0.f, 0.f});
-		glm_rotate_y(gl.modelview, M_PI_2, gl.modelview);
-		glm_rotate_z(gl.modelview, M_PI_2, gl.modelview);
-		glm_translate(gl.modelview, (vec3){-DISCV_CAMERA(camera)->target.x,
-						   -DISCV_CAMERA(camera)->target.y,
-						   0.f});
-		break;
-
 		case FSV_MAPV:
 		glm_translate(gl.modelview, (vec3){-camera->distance, 0.f, 0.f});
 		glm_rotate_y(gl.modelview, camera->phi * M_PI / 180, gl.modelview);
@@ -548,7 +539,7 @@ render(GtkGLArea *area, GdkGLContext *context)
 		else if (globals.fsv_mode == FSV_MAPV)
 			hide = geometry_mapv_hide_labels_moving( );
 		else
-			hide = TRUE; /* DiscV/splash: unchanged legacy behaviour */
+			hide = TRUE; /* Splash: unchanged legacy behaviour */
 
 		geometry_draw( !(moving && hide) );
 	}
