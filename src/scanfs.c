@@ -84,7 +84,7 @@ stat_node( GNode *node )
 	NODE_DESC(node)->size_alloc = 512 * st.st_blocks;
 	NODE_DESC(node)->user_id = st.st_uid;
 	NODE_DESC(node)->group_id = st.st_gid;
-	/*NODE_DESC(node)->perms = st.st_mode;*/
+	NODE_DESC(node)->perms = st.st_mode & 0777;
 	NODE_DESC(node)->atime = st.st_atime;
 	NODE_DESC(node)->mtime = st.st_mtime;
 	NODE_DESC(node)->ctime = st.st_ctime;

@@ -6,6 +6,7 @@ in vec3 fragPos;
 in vec3 fragNormal;
 in vec4 lightPos;
 in vec3 fragVColor;
+in float fragHighlight;
 
 out vec4 outputColor;
 
@@ -49,9 +50,19 @@ void main() {
   vec3 reflectDir = reflect(-lightDir, fragNN);
   float spec = pow(max(dot(viewDir, reflectDir), 0.0), 2);
   vec3 spec_light = specular * spec * light_color;
+  // Narrow clear-coat reflection on top of the broad legacy highlight gives
+  // pastel blocks a polished, glass-like surface without alpha blending.
+  float clear_coat = pow(max(dot(viewDir, reflectDir), 0.0), 28.0);
 
   // Final color from lightning calculation
-  outputColor = vec4(((ambient_light + diffuse_light + spec_light) * base_color.rgb), base_color.a);
+  outputColor = vec4(((ambient_light + diffuse_light + spec_light) * base_color.rgb) +
+                     vec3(0.58, 0.82, 0.92) * clear_coat * 0.22, base_color.a);
+
+  // A restrained Fresnel rim gives the opaque pastel surfaces a glass-like
+  // edge highlight. Selection mode returns above, so pick colors stay exact.
+  float rim = pow(1.0 - abs(dot(fragNN, viewDir)), 3.0);
+  float rim_light = min(rim * (0.24 + 0.34 * fragHighlight), 0.58);
+  outputColor.rgb = mix(outputColor.rgb, vec3(0.86, 0.98, 1.0), rim_light);
 
 
   // For debugging, uncomment this. Also set fragNormal to flat in both vertex

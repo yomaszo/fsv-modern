@@ -36,6 +36,7 @@ on_color_by_timestamp_activate         (GtkMenuItem     *menuitem,
 void
 on_color_by_wildcards_activate         (GtkMenuItem     *menuitem,
                                         gpointer         user_data);
+void on_color_by_filetype_activate(GtkMenuItem *menuitem, gpointer user_data);
 
 void
 on_color_setup_activate                (GtkMenuItem     *menuitem,

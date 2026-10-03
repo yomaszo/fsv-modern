@@ -21,6 +21,7 @@ GtkWidget *dir_contents_list( GNode *dnode );
 #endif
 void filelist_reset_access( void );
 void filelist_populate( GNode *dnode );
+void filelist_show_directory( GNode *dnode );
 void filelist_show_entry( GNode *node );
 void filelist_init( void );
 void filelist_scan_monitor_init( void );

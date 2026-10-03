@@ -93,6 +93,7 @@ void geometry_treev_force_rearrange( void );
 void geometry_treev_follow_update( void );
 boolean geometry_should_highlight(GNode *node);
 void geometry_highlight_node( GNode *node, boolean strong );
+void geometry_set_selected_node( GNode *node );
 void geometry_free_recursive( GNode *dnode );
 
 /* Runtime performance toggles (Help menu check items; see geometry.c for

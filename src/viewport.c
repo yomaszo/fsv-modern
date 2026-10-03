@@ -43,6 +43,7 @@ static size_t node_table_size;
 
 /* The currently highlighted (indicated) node */
 static GNode *indicated_node = NULL;
+static GNode *selected_node = NULL;
 static boolean camera_dragging = FALSE;
 static double last_hover_pick_time = -1.0;
 
@@ -60,6 +61,24 @@ viewport_indicated_node( void )
 	return indicated_node;
 }
 
+void
+viewport_set_selected_node(GNode *node)
+{
+	selected_node = node;
+}
+
+static void
+viewport_update_highlight(boolean force)
+{
+	GNode *node = indicated_node;
+	if (node != NULL && (force || geometry_should_highlight(node)))
+		geometry_highlight_node(node, force);
+	else if (selected_node != NULL && geometry_should_highlight(selected_node))
+		geometry_highlight_node(selected_node, FALSE);
+	else
+		geometry_highlight_node(NULL, FALSE);
+}
+
 
 /* Receives a newly created node table from scanfs( ) */
 void
@@ -73,6 +92,7 @@ viewport_pass_node_table(GNode **new_node_table, size_t ntsize)
 	/* The indicated node belongs to the tree represented by the previous
 	 * table and must not survive a filesystem rescan. */
 	indicated_node = NULL;
+	selected_node = NULL;
 }
 
 
@@ -179,15 +199,17 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 				indicated_node = NULL;
 			else
 				indicated_node = node_at_location(x, y);
+			if (btn1) {
+				window_set_selected_node(indicated_node);
+				viewport_update_highlight(TRUE);
+			}
 			if (indicated_node == NULL) {
-				geometry_highlight_node( NULL, FALSE );
+				viewport_update_highlight(FALSE);
 				window_statusbar( SB_RIGHT, "" );
 			}
 			else {
-				if (geometry_should_highlight(indicated_node) || btn1)
-					geometry_highlight_node( indicated_node, btn1 );
-				else
-					geometry_highlight_node( NULL, FALSE );
+				if (!btn1)
+					viewport_update_highlight(FALSE);
 				window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
 				if (btn3) {
 					/* Bring up context-sensitive menu */
@@ -201,17 +223,20 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		break;
 
 		case GDK_2BUTTON_PRESS:
-		/* Ignore second click of a double-click */
+		if (gdk_event_get_button(event, &button) && button == 1 &&
+		    gdk_event_get_coords(event, &x, &y)) {
+			scale = gtk_widget_get_scale_factor(gl_area_w);
+			node = node_at_location((int)(x * scale), (int)(y * scale));
+			if (node != NULL) {
+				indicated_node = node;
+				window_set_selected_node(node);
+				camera_look_at(node);
+			}
+		}
 		break;
 
 		case GDK_BUTTON_RELEASE:
 			camera_dragging = FALSE;
-		if (!gdk_event_get_state(event, &ev_state))
-			break;
-		btn1 = ev_state & GDK_BUTTON1_MASK;
-		ctrl_key = ev_state & GDK_CONTROL_MASK;
-		if (btn1 && !ctrl_key && !camera_moving( ) && (indicated_node != NULL))
-			camera_look_at( indicated_node );
 		gui_cursor( gl_area_w, -1 );
 		redraw( );
 		break;
@@ -274,14 +299,11 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 							indicated_node = node_at_location(x, y);
 			/* Update node highlighting */
 			if (indicated_node == NULL) {
-				geometry_highlight_node( NULL, FALSE );
+				viewport_update_highlight(FALSE);
 				window_statusbar( SB_RIGHT, "" );
 			}
 			else {
-				if (geometry_should_highlight(indicated_node) || btn1)
-					geometry_highlight_node( indicated_node, btn1 );
-				else
-					geometry_highlight_node( NULL, FALSE);
+				viewport_update_highlight(btn1);
 				window_statusbar( SB_RIGHT, node_absname( indicated_node ) );
 			}
 			prev_x = x;
@@ -293,7 +315,7 @@ viewport_cb(GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data)
 		case GDK_LEAVE_NOTIFY:
 		/* The mouse has left the viewport */
 			camera_dragging = FALSE;
-		geometry_highlight_node( NULL, FALSE );
+		viewport_update_highlight(FALSE);
 		window_statusbar( SB_RIGHT, "" );
 		gui_cursor( gl_area_w, -1 );
 		indicated_node = NULL;

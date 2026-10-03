@@ -18,6 +18,7 @@
 void viewport_pass_node_table(GNode **new_node_table, size_t nz);
 boolean viewport_camera_dragging( void );
 GNode *viewport_indicated_node( void );
+void viewport_set_selected_node(GNode *node);
 #ifdef __GTK_H__
 gboolean viewport_cb( GtkWidget *gl_area_w, GdkEvent *event, gpointer user_data );
 #endif

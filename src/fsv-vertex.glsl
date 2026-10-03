@@ -15,6 +15,7 @@ out vec3 fragPos;
 out vec3 fragNormal;
 out vec4 lightPos;
 out vec3 fragVColor;
+out float fragHighlight;
 
 uniform mat4 mvp;
 uniform mat4 modelview;
@@ -93,6 +94,9 @@ void main() {
   }
 
   gl_Position = mvp * pos;
+
+  fragHighlight = vertex_node_id > 0.0 &&
+                  abs(vertex_node_id - highlighted_node_id) < 0.5 ? 1.0 : 0.0;
 
   if (use_vertex_color) {
     if (selection_mode) {

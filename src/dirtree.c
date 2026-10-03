@@ -85,21 +85,27 @@ dirtree_select_cb(GtkTreeSelection *selection, gpointer data)
 		gtk_tree_model_get(model, &iter, DIRTREE_NODE_COLUMN, &dnode, -1);
 		if (!dnode)
 			return;
-		/* Selecting a directory in the sidebar always navigates the
-		 * camera to it now -- previously this only happened if the
-		 * directory was already expanded (or had no subdirectories),
-		 * otherwise the click just selected/highlighted it without
-		 * moving the camera. Mirrors filelist_select_cb( )'s behavior
-		 * for the file list, which has always done this unconditionally.
-		 * camera_look_at( ) handles a collapsed target fine on its own
-		 * (it expands the necessary ancestor chain itself -- see
-		 * camera_look_at_full( ) -- and updates the current node, file
-		 * list, and status bar once the pan completes, via
-		 * post_pan_end( ) -> filelist_show_entry( ) -> dirtree_entry_show( )). */
-		camera_look_at( dnode );
+		window_set_selected_node(dnode);
 		geometry_highlight_node(dnode, FALSE);
 		window_statusbar(SB_RIGHT, node_absname(dnode));
-		g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
+	}
+}
+
+static void
+dirtree_row_activated_cb(GtkTreeView *tree, GtkTreePath *path,
+			 GtkTreeViewColumn *column, gpointer data)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model(tree);
+	GtkTreeIter iter;
+	GNode *dnode = NULL;
+	(void)column;
+	(void)data;
+	if (gtk_tree_model_get_iter(model, &iter, path)) {
+		gtk_tree_model_get(model, &iter, DIRTREE_NODE_COLUMN, &dnode, -1);
+		if (dnode) {
+			window_set_selected_node(dnode);
+			camera_look_at(dnode);
+		}
 	}
 }
 
@@ -144,6 +150,7 @@ dirtree_button_press_cb(GtkWidget *tree_w, GdkEventButton *ev_button, gpointer d
 	gtk_tree_path_free(path);
 
 	if (dnode) {
+		window_set_selected_node(dnode);
 		geometry_highlight_node(dnode, FALSE);
 		window_statusbar(SB_RIGHT, node_absname(dnode));
 		context_menu( dnode );
@@ -219,6 +226,7 @@ dirtree_pass_widget( GtkWidget *tree_w )
 	gtk_tree_selection_set_mode(select, GTK_SELECTION_SINGLE);
 	/* Connect signal handlers */
 	g_signal_connect(G_OBJECT(select), "changed", G_CALLBACK(dirtree_select_cb), NULL );
+	g_signal_connect(G_OBJECT(dir_tree_w), "row-activated", G_CALLBACK(dirtree_row_activated_cb), NULL);
 	g_signal_connect( G_OBJECT(dir_tree_w), "row_collapsed", G_CALLBACK(dirtree_collapse_cb), NULL );
 	g_signal_connect( G_OBJECT(dir_tree_w), "row_expanded", G_CALLBACK(dirtree_expand_cb), NULL );
 	g_signal_connect( G_OBJECT(dir_tree_w), "button_press_event", G_CALLBACK(dirtree_button_press_cb), NULL );

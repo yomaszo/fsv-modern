@@ -32,7 +32,7 @@
 
 
 /* Default configuration */
-static const ColorMode default_color_mode = COLOR_BY_NODETYPE;
+static const ColorMode default_color_mode = COLOR_BY_FILETYPE;
 static const char *default_nodetype_colors[NUM_NODE_TYPES] = {
 	NULL,		/* Metanode (not used) */
 	"#A0A0A0",	/* Directory */
@@ -64,6 +64,7 @@ static const char *tokens_color_mode[] = {
 	"nodetype",
 	"time",
 	"wpattern",
+	"filetype",
 	NULL
 };
 static const char key_nodetype[] = "nodetype";
@@ -112,6 +113,89 @@ static ColorMode color_mode;
 static RGBcolor spectrum_underflow_color;
 static RGBcolor spectrum_colors[SPECTRUM_NUM_SHADES];
 static RGBcolor spectrum_overflow_color;
+static RGBcolor filetype_colors[6] = {
+	{ 0.478f, 0.855f, 0.910f }, /* source: soft cyan */
+	{ 0.933f, 0.820f, 0.569f }, /* media: warm pastel */
+	{ 0.506f, 0.835f, 0.702f }, /* archives: mint */
+	{ 0.914f, 0.592f, 0.651f }, /* system / executable: rose */
+	{ 0.922f, 0.702f, 0.549f }, /* documents: apricot */
+	{ 0.620f, 0.729f, 0.749f }  /* other: blue gray */
+};
+/* Lower-saturation tints for folder faces. Their category follows the
+ * largest byte total in the subtree, while file blocks keep the stronger
+ * semantic colors above. */
+static RGBcolor filetype_directory_colors[6] = {
+	{ 0.58f, 0.78f, 0.80f }, /* source: pale cyan */
+	{ 0.84f, 0.75f, 0.54f }, /* media: pale amber */
+	{ 0.54f, 0.76f, 0.66f }, /* archives: pale mint */
+	{ 0.79f, 0.57f, 0.62f }, /* system: pale rose */
+	{ 0.82f, 0.66f, 0.55f }, /* documents: pale apricot */
+	{ 0.62f, 0.75f, 0.77f }  /* other: pale blue gray */
+};
+
+typedef struct FileTypeWeights {
+	guint64 bytes[6];
+} FileTypeWeights;
+
+static int
+filetype_category(GNode *node)
+{
+	const char *name = NODE_DESC(node)->name;
+	const char *dot = strrchr(name, '.');
+	static const char *source[] = {"c", "h", "cc", "cpp", "hpp", "py", "js", "ts", "rs", "go", "java", "sh", "json", "toml", "yml", "yaml", "xml", "html", "css", "sql", NULL};
+	static const char *media[] = {"png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "ogg", "flac", "wav", "mp4", "mkv", "mov", NULL};
+	static const char *archives[] = {"zip", "tar", "gz", "xz", "bz2", "7z", "rar", "iso", "db", "sqlite", "sqlite3", NULL};
+	static const char *documents[] = {"pdf", "txt", "md", "odt", "doc", "docx", "rtf", "epub", "ppt", "pptx", "xls", "xlsx", NULL};
+	static const char *system[] = {"exe", "bin", "appimage", "so", "dll", "dylib", "ko", NULL};
+	const char **groups[] = {source, media, archives, documents, system};
+	if (NODE_DESC(node)->type == NODE_SYMLINK)
+		return 5;
+	if (dot != NULL && dot != name && dot[1] != '\0') {
+		for (int group = 0; group < 5; group++)
+			for (int i = 0; groups[group][i] != NULL; i++)
+				if (g_ascii_strcasecmp(dot + 1, groups[group][i]) == 0)
+					return group == 3 ? 4 : (group == 4 ? 3 : group);
+	}
+	if (NODE_DESC(node)->perms & 0111)
+		return 3;
+	return 5;
+}
+
+static const RGBcolor *
+filetype_color(GNode *node)
+{
+	return &filetype_colors[filetype_category(node)];
+}
+
+/* Assign semantic colors bottom-up in one traversal. Directory face colors
+ * use the largest file-type byte total below them; this avoids rescanning
+ * each subtree separately on large trees. */
+static FileTypeWeights
+filetype_assign_recursive(GNode *dnode)
+{
+	FileTypeWeights totals = {{0}};
+	GNode *node;
+	int dominant = 5;
+
+	for (node = dnode->children; node != NULL; node = node->next) {
+		if (NODE_IS_DIR(node)) {
+			FileTypeWeights child = filetype_assign_recursive(node);
+			for (int i = 0; i < 6; i++)
+				totals.bytes[i] += child.bytes[i];
+		} else {
+			int category = filetype_category(node);
+			guint64 bytes = (guint64)MAX(NODE_DESC(node)->size, 1);
+			totals.bytes[category] += bytes;
+			NODE_DESC(node)->color = filetype_color(node);
+		}
+	}
+
+	for (int i = 0; i < 6; i++)
+		if (totals.bytes[i] > totals.bytes[dominant])
+			dominant = i;
+	NODE_DESC(dnode)->color = &filetype_directory_colors[dominant];
+	return totals;
+}
 
 
 /* Copies a ColorConfig structure from one location to another */
@@ -298,6 +382,11 @@ color_assign_recursive( GNode *dnode )
 	const RGBcolor *color;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
+	if (color_mode == COLOR_BY_FILETYPE) {
+		geometry_queue_rebuild(dnode);
+		filetype_assign_recursive(dnode);
+		return;
+	}
 
 	geometry_queue_rebuild( dnode );
 

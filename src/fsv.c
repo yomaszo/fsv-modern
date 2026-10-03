@@ -75,6 +75,7 @@ initial_camera_pan( char *mesg )
 
 	if (!strcmp( mesg, "new_fs" )) {
 		/* First look at new filesystem */
+		window_start_scene_fade();
 		camera_look_at_full( root_dnode, MORPH_SIGMOID, 4.0 );
 	}
 	else {
@@ -119,6 +120,7 @@ fsv_set_mode( FsvMode mode )
 	camera_init( mode, first_init );
 
 	globals.fsv_mode = mode;
+	window_set_view_mode(mode);
 
 	/* Ensure that About presentation is not up */
 	about( ABOUT_END );
@@ -147,9 +149,13 @@ fsv_load( const char *dir )
 {
 	/* Lock down interface */
 	window_set_access( FALSE );
+	/* Selection pointers reference the old tree; clear its viewport frame
+	 * before scanfs( ) replaces the filesystem nodes. */
+	window_set_selected_node(NULL);
 
 	/* Bring up splash screen */
 	globals.fsv_mode = FSV_SPLASH;
+	window_scan_logo_show(TRUE);
 	redraw( );
 
 	/* Reset scrollbars (disable scrolling) */
@@ -169,10 +175,9 @@ fsv_load( const char *dir )
 	filelist_init( );
 	gui_update( );
 
-	// Sleep for a short while so one can see the splash screen.
-	sleep(2);
-
 	/* Initialize visualization */
+	window_scan_logo_show(FALSE);
+	window_prepare_scene_fade();
 	globals.fsv_mode = FSV_NONE;
 	fsv_set_mode( initial_fsv_mode );
 }

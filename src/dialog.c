@@ -1098,7 +1098,7 @@ look_at_target_node_cb( GtkWidget *unused, GNode *node )
 
 
 /* The Properties dialog */
-static void
+void
 dialog_node_properties( GNode *node )
 {
 	const struct NodeInfo *node_info;

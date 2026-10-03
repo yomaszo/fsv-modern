@@ -24,11 +24,19 @@ typedef enum {
 
 void window_init(GtkApplication *app, gpointer user_data);
 void window_set_access( boolean enabled );
+void window_set_view_mode( FsvMode mode );
 #ifdef FSV_COLOR_H
 void window_set_color_mode( ColorMode mode );
 #endif
 void window_birdseye_view_off( void);
 void window_statusbar( StatusBarID sb_id, const char *message );
+void window_set_files_section(const char *directory_name);
+void window_set_directory_summary(GNode *dnode);
+void window_set_selected_node(GNode *node);
+void window_refresh_selected_node(void);
+void window_scan_logo_show(boolean show);
+void window_prepare_scene_fade(void);
+void window_start_scene_fade(void);
 
 
 /* end window.h */

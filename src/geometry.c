@@ -111,6 +111,7 @@ debug_print_matrices(int which)
 
 
 static unsigned int highlight_node_id;
+static GNode *selection_cursor_node;
 static boolean treev_cache_building;
 
 // Set node color and lightning enabled uniform. GL Program must be in use when
@@ -146,7 +147,9 @@ node_set_color(GNode *node)
 	glUniform4fv(gl.color_location, 1, color);
 }
 
-static const RGBcolor color_black = {0, 0, 0};
+/* Replaces the legacy black construction lines with a low-contrast teal edge
+ * that matches the modern viewport palette without changing draw topology. */
+static const RGBcolor color_outline = {0.245f, 0.500f, 0.565f};
 
 // Upload and draw a bunch of VertexPos vertices.
 // Note this is highly inefficient and implements every known modern GL
@@ -1371,7 +1374,7 @@ mapv_gldraw_folder( GNode *dnode )
 		{{folder_c1.x, folder_c0.y, 0}}
 	};
 
-	drawVertexPos(GL_LINE_LOOP, vert, 7, &color_black);
+	drawVertexPos(GL_LINE_LOOP, vert, 7, &color_outline);
 }
 
 
@@ -1927,8 +1930,18 @@ mapv_draw( boolean high_detail )
 		if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_high_draw_stage <= 1))
 			++fstree_high_draw_stage;
 
-		/* Node cursor */
-		mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
+		/* Keep the white selection frame on the selected node independently
+		 * from the camera's last Look at target. */
+		if (selection_cursor_node != NULL) {
+			MapVGeomParams *gparams = MAPV_GEOM_PARAMS(selection_cursor_node);
+			XYZvec c0 = {gparams->c0.x, gparams->c0.y,
+				geometry_mapv_node_z0(selection_cursor_node)};
+			XYZvec c1 = {gparams->c1.x, gparams->c1.y,
+				geometry_mapv_node_z0(selection_cursor_node) + gparams->height};
+			mapv_gldraw_cursor(&c0, &c1);
+		} else {
+			mapv_draw_cursor( CURSOR_POS(camera->pan_part) );
+		}
 	}
 }
 
@@ -3278,7 +3291,7 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 			vertx[i] = (VertexPos){{corners[x_verts[i]].x, corners[x_verts[i]].y, z1}};
 		if (gl.render_mode == RENDERMODE_SELECT)
 			treev_batch_flush( );
-		drawVertexPos(GL_LINES, vertx, 4, &color_black);
+		drawVertexPos(GL_LINES, vertx, 4, &color_outline);
 		return;
 	}
 
@@ -3403,7 +3416,7 @@ treev_gldraw_folder( GNode *dnode, double r0 )
 		vert[i] = (VertexPos){{p_rot.x, p_rot.y, p_rot.z}};
 	}
 
-	drawVertexPos(GL_LINE_STRIP, vert, 8, &color_black);
+	drawVertexPos(GL_LINE_STRIP, vert, 8, &color_outline);
 }
 
 
@@ -4452,7 +4465,13 @@ treev_draw( boolean high_detail )
 		/* Node cursor */
 		if (!high_detail)
 			return;
-		treev_draw_cursor( CURSOR_POS(camera->pan_part) );
+		if (selection_cursor_node != NULL) {
+			RTZvec c0, c1;
+			treev_get_corners(selection_cursor_node, &c0, &c1);
+			treev_gldraw_cursor(&c0, &c1);
+		} else {
+			treev_draw_cursor( CURSOR_POS(camera->pan_part) );
+		}
 	}
 }
 
@@ -4746,83 +4765,8 @@ geometry_gldraw_fsv( void )
 static void
 splash_draw( void )
 {
-	XYZvec text_pos;
-	XYvec text_dims;
-	double bottom_y;
-	double k;
-
-	/* Draw fsv title */
-
-	/* Set up projection matrix */
-	k = 82.84 / ogl_aspect_ratio( );
-	mat4 proj;
-	glm_frustum(-70.82, 95.40, - k, k, 200.0, 400.0, proj);
-
-	/* Set up modelview matrix */
-	mat4 mv;
-	glm_mat4_identity(mv);
-	glm_translate(mv, (vec3){0.0, 0.0, -300.0});
-	glm_rotate_x(mv, 10.5 * M_PI/180.0, mv);
-	glm_translate(mv, (vec3){20.0, 20.0, -30.0});
-
-	mat4 mvp;
-	glm_mat4_mul(proj, mv, mvp);
-	mat3 normmat;
-	glm_mat4_pick3(mv, normmat);
-	glm_mat3_inv(normmat, normmat);
-	glm_mat3_transpose(normmat);
-	glUseProgram(aboutGL.program);
-	/* update the "mvp" matrix we use in the shader */
-	glUniformMatrix4fv(aboutGL.mvp_location, 1, GL_FALSE, (float*)mvp);
-	glUniformMatrix4fv(aboutGL.modelview_location, 1, GL_FALSE, (float*) mv);
-	glUniformMatrix3fv(aboutGL.normal_matrix_location, 1, GL_FALSE, (float*) normmat);
-	glUseProgram(0);
-
-	geometry_gldraw_fsv( );
-
-	/* Draw accompanying text */
-
-	/* Set up projection matrix */
-	k = 0.5 / ogl_aspect_ratio( );
-	// Reuse proj matrix from the "FSV" drawing
-	glm_ortho(0.0, 1.0, - k, k, -1.0, 1.0, proj);
-	bottom_y = - k;
-
-	/* Set up modelview matrix */
-	// Modelview is the identity, so mvp is just the projection matrix.
-	text_upload_mvp((float*) proj);
-
-	text_pre( );
-
-	/* Title */
-	text_set_color(1.0, 1.0, 1.0);
-	text_pos.x = 0.2059;
-	text_pos.y = -0.1700;
-	text_pos.z = 0.0;
-	text_dims.x = 0.9;
-	text_dims.y = 0.0625;
-	text_draw_straight( "File", &text_pos, &text_dims );
-	text_pos.x = 0.4449;
-	text_draw_straight( "System", &text_pos, &text_dims );
-	text_pos.x = 0.7456;
-	text_draw_straight( "Visualizer", &text_pos, &text_dims );
-
-	/* Version */
-	text_set_color(0.75, 0.75, 0.75);
-	text_pos.x = 0.5000;
-	text_pos.y = (2.0 - MAGIC_NUMBER) * (0.2247 + bottom_y) - 0.2013;
-	text_dims.y = 0.0386;
-	text_draw_straight( "Version " VERSION, &text_pos, &text_dims );
-
-	/* Copyright/author info */
-	text_set_color(0.5, 0.5, 0.5);
-	text_pos.y = bottom_y + 0.0417;
-	text_dims.y = 0.0234;
-	text_draw_straight( "Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>", &text_pos, &text_dims );
-	text_pos.y = bottom_y + 0.0117;
-	text_draw_straight("Copyright (C) 2021 Janne Blomqvist", &text_pos, &text_dims);
-
-	text_post( );
+	/* The native 3D logo has been replaced by the centered GTK logo overlay.
+	 * Keep this mode geometry-free while scanfs() reports progress. */
 }
 
 
@@ -5002,6 +4946,15 @@ geometry_highlight_node( GNode *node, boolean strong )
 		return;
 
 	highlight_node_id = new_highlight_id;
+	redraw();
+}
+
+void
+geometry_set_selected_node(GNode *node)
+{
+	if (selection_cursor_node == node)
+		return;
+	selection_cursor_node = node;
 	redraw();
 }
 

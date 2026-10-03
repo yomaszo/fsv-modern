@@ -18,6 +18,7 @@
 #ifdef __GTK_H__
 void dialog_pass_main_window_widget( GtkWidget *window_w );
 void context_menu( GNode *node );
+void dialog_node_properties( GNode *node );
 #endif
 void dialog_change_root( void );
 void dialog_color_setup( void );

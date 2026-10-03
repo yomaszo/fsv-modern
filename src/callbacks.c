@@ -110,6 +110,14 @@ on_color_by_wildcards_activate( GtkMenuItem *menuitem, gpointer user_data )
 	color_set_mode( COLOR_BY_WPATTERN );
 }
 
+/* Colors -> By file type */
+void
+on_color_by_filetype_activate( GtkMenuItem *menuitem, gpointer user_data )
+{
+	IGNORE_MENU_ITEM_DESELECT(menuitem);
+	color_set_mode( COLOR_BY_FILETYPE );
+}
+
 
 /* Colors -> Setup... */
 void

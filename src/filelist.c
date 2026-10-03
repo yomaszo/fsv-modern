@@ -38,6 +38,19 @@ static GNode *filelist_current_dnode;
 /* Mini node type icons */
 static Icon node_type_mini_icons[NUM_NODE_TYPES];
 
+/* GTK symbolic icons for the modern sidebar file list. */
+static const char *node_type_symbolic_icons[NUM_NODE_TYPES] = {
+	NULL,
+	"folder-symbolic",
+	"text-x-generic-symbolic",
+	"insert-link-symbolic",
+	"text-x-generic-symbolic",
+	"text-x-generic-symbolic",
+	"drive-harddisk-symbolic",
+	"drive-harddisk-symbolic",
+	"text-x-generic-symbolic"
+};
+
 
 /* Loads the mini node type icons (from XPM data) */
 static void
@@ -90,7 +103,11 @@ filelist_reset_access( void )
 static int
 compare_node( GNode *a, GNode *b )
 {
-	return strcmp( NODE_DESC(a)->name, NODE_DESC(b)->name );
+	boolean a_is_dir = NODE_IS_DIR(a);
+	boolean b_is_dir = NODE_IS_DIR(b);
+	if (a_is_dir != b_is_dir)
+		return a_is_dir ? -1 : 1;
+	return g_utf8_collate(NODE_DESC(a)->name, NODE_DESC(b)->name);
 }
 
 
@@ -100,9 +117,6 @@ filelist_populate( GNode *dnode )
 {
 	GNode *node;
 	GList *node_list = NULL, *node_llink;
-	Icon *icon;
-	int count = 0;
-	char strbuf[64];
 
 	g_assert( NODE_IS_DIR(dnode) );
 
@@ -124,17 +138,19 @@ filelist_populate( GNode *dnode )
 	node_llink = node_list;
 	while (node_llink != NULL) {
 		node = (GNode *)node_llink->data;
-		icon = &node_type_mini_icons[NODE_DESC(node)->type];
 		GtkTreeIter it;
+		const char *size_text = NODE_IS_DIR(node) ?
+			abbrev_size(DIR_NODE_DESC(node)->subtree.size) :
+			abbrev_size(NODE_DESC(node)->size);
 		gtk_list_store_append(store, &it);
 
 		gtk_list_store_set(store, &it,
-				   FILELIST_ICON_COLUMN, icon->pixbuf,
+				   FILELIST_ICON_COLUMN, node_type_symbolic_icons[NODE_DESC(node)->type],
 				   FILELIST_NAME_COLUMN, NODE_DESC(node)->name,
+				   FILELIST_SIZE_COLUMN, size_text,
 				   FILELIST_NODE_COLUMN, node,
 				   -1);
 
-		++count;
 		node_llink = node_llink->next;
 	}
 	gtk_tree_view_set_model(GTK_TREE_VIEW(file_list_w), model); /* Re-attach model to view */
@@ -142,24 +158,17 @@ filelist_populate( GNode *dnode )
 
 	g_list_free( node_list );
 
-	/* Set node count message in the left statusbar */
-	switch (count) {
-		case 0:
-		strcpy( strbuf, "" );
-		break;
-
-		case 1:
-		strcpy( strbuf, _("1 node") );
-		break;
-
-		default:
-		sprintf( strbuf, _("%d nodes"), count );
-		break;
-	}
-	window_statusbar( SB_LEFT, strbuf );
-
 	filelist_current_dnode = dnode;
+	window_set_files_section(NODE_DESC(dnode)->name);
+	window_set_directory_summary(dnode);
 	filelist_reset_access( );
+}
+
+void
+filelist_show_directory(GNode *dnode)
+{
+	if (dnode != NULL && NODE_IS_DIR(dnode) && dnode != filelist_current_dnode)
+		filelist_populate(dnode);
 }
 
 
@@ -235,6 +244,7 @@ filelist_show_entry( GNode *node )
 	else
 		gtk_tree_selection_unselect_all(select);
 	g_signal_handlers_unblock_by_func( select, G_CALLBACK (filelist_select_cb), NULL );
+	window_set_selected_node(node);
 }
 
 
@@ -257,16 +267,7 @@ filelist_select_cb(GtkTreeSelection *selection, gpointer data)
 		gtk_tree_model_get(model, &iter, FILELIST_NODE_COLUMN, &dnode, -1);
 		if (!dnode)
 			return;
-		/* The file's parent directory may not be expanded in the
-		 * tree view yet (e.g. right after a large "expand all"),
-		 * which would otherwise trip an assertion / leave the tree
-		 * widget out of sync when the camera jumps to this node */
-		if (NODE_IS_DIR(dnode->parent))
-			if (!dirtree_entry_expanded(dnode->parent))
-				colexp(dnode->parent, COLEXP_EXPAND_ANY);
-		camera_look_at(dnode);
-		
-		//g_signal_stop_emission_by_name(G_OBJECT(selection), "changed" );
+		window_set_selected_node(dnode);
 		geometry_highlight_node(dnode, FALSE);
 		window_statusbar(SB_RIGHT, node_absname(dnode));
 	}
@@ -309,6 +310,26 @@ filelist_select_cb(GtkTreeSelection *selection, gpointer data)
 	// return FALSE;
 }
 
+static void
+filelist_row_activated_cb(GtkTreeView *tree, GtkTreePath *path,
+			  GtkTreeViewColumn *column, gpointer data)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model(tree);
+	GtkTreeIter iter;
+	GNode *node = NULL;
+	(void)column;
+	(void)data;
+	if (!gtk_tree_model_get_iter(model, &iter, path))
+		return;
+	gtk_tree_model_get(model, &iter, FILELIST_NODE_COLUMN, &node, -1);
+	if (!node)
+		return;
+	if (NODE_IS_DIR(node->parent) && !dirtree_entry_expanded(node->parent))
+		colexp(node->parent, COLEXP_EXPAND_ANY);
+	window_set_selected_node(node);
+	camera_look_at(node);
+}
+
 /* Creates/initializes the file list widget */
 void
 filelist_init( void )
@@ -329,6 +350,7 @@ filelist_init( void )
 	gtk_tree_selection_set_mode(select, GTK_SELECTION_SINGLE);
 
 	g_signal_connect( G_OBJECT(select), "changed", G_CALLBACK(filelist_select_cb), NULL );
+	g_signal_connect( G_OBJECT(file_list_w), "row-activated", G_CALLBACK(filelist_row_activated_cb), NULL );
 
 	filelist_populate( root_dnode );
 

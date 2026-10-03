@@ -8,5 +8,8 @@
     <file>fsv-text-vertex.glsl</file>
     <file>fsv-about-fragment.glsl</file>
     <file>fsv-about-vertex.glsl</file>
+    <file>fsv-modern.css</file>
+    <file>fsv-logo.svg</file>
+    <file>fsv-mark.svg</file>
   </gresource>
 </gresources>

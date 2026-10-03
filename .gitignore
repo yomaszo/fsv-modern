@@ -39,3 +39,5 @@ builddir
 *.bak
 *.bak2
 /prototype/
+.webui_secret_key
+diff.txt

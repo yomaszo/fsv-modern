@@ -1,0 +1,223 @@
+/* fsv-modern – dark teal theme for GTK 3 (tested syntax: GTK 3.24)
+ * GTK3 CSS has no var(), flex, gap or backdrop-filter: colors use
+ * @define-color, spacing uses widget properties (spacing/margins). */
+
+@define-color fsv_bg      #080d16;
+@define-color fsv_bar     #0a111b;
+@define-color fsv_side    #0b121c;
+@define-color fsv_raise   #101a27;
+@define-color fsv_line    #15222e;
+@define-color fsv_edge    #1d3342;
+@define-color fsv_sel     #12202e;
+@define-color fsv_seg_on  #16394a;
+@define-color fsv_text    #cfe3e8;
+@define-color fsv_dim     #7f98a3;
+@define-color fsv_accent  #6ee7f9;
+
+@define-color fsv_code    #7bdbea;
+@define-color fsv_media   #eed191;
+@define-color fsv_archive #81d5b3;
+@define-color fsv_system  #e997a6;
+@define-color fsv_docs    #ebb38c;
+@define-color fsv_root    #9ebac0;
+@define-color fsv_grid    #6fa3ad;
+
+window.fsv-window { background-color: @fsv_bg; color: @fsv_text; font-family: "Exo 2", "Cantarell", sans-serif; }
+.fsv-window menubar.fsv-menubar {
+  background-color: @fsv_bar;
+  border-bottom: 1px solid @fsv_line;
+  color: @fsv_text;
+}
+.fsv-window menubar.fsv-menubar > menuitem { padding: 7px 10px; }
+.fsv-window .fsv-toolbar {
+  background-color: @fsv_bar;
+  border-bottom: 1px solid @fsv_line;
+  padding: 5px 8px;
+}
+.fsv-window frame { border-color: @fsv_line; }
+.fsv-window paned > separator { background-color: @fsv_line; min-width: 1px; min-height: 1px; }
+.fsv-window treeview.view { color: @fsv_text; }
+.fsv-window treeview.view:selected,
+.fsv-window treeview.view:selected:focus { background-color: @fsv_sel; color: @fsv_accent; }
+
+/* ---------- Header bar ---------- */
+headerbar.fsv-header {
+  background-image: none;
+  background-color: @fsv_bar;
+  border-bottom: 1px solid @fsv_line;
+  box-shadow: none;
+  min-height: 46px;
+  padding: 0 8px;
+  color: @fsv_text;
+}
+headerbar.fsv-header .title { color: @fsv_accent; font-weight: 700; letter-spacing: 0.22em; }
+headerbar.fsv-header button,
+.fsv-button {
+  background-image: none;
+  background-color: @fsv_raise;
+  border: 1px solid @fsv_edge;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @fsv_text;
+  padding: 4px 10px;
+  text-shadow: none;
+}
+headerbar.fsv-header button:hover,
+.fsv-button:hover { background-color: @fsv_sel; border-color: alpha(@fsv_accent, 0.5); }
+headerbar.fsv-header button:active,
+.fsv-button:active { background-color: @fsv_seg_on; }
+
+headerbar.fsv-header entry,
+entry.fsv-search {
+  background-image: none;
+  background-color: @fsv_raise;
+  border: 1px solid @fsv_edge;
+  border-radius: 10px;
+  box-shadow: none;
+  color: @fsv_text;
+  caret-color: @fsv_accent;
+  min-height: 34px;
+  padding: 0 12px;
+}
+headerbar.fsv-header entry:focus,
+entry.fsv-search:focus { border-color: @fsv_accent; box-shadow: 0 0 0 2px alpha(@fsv_accent, 0.25); }
+
+/* Segmented MapV / TreeV switch: a horizontal GtkBox (spacing 0, style class
+ * "fsv-segmented") holding two GtkRadioButtons with draw-indicator = FALSE */
+.fsv-segmented { background-color: @fsv_raise; border-radius: 10px; padding: 3px; }
+.fsv-segmented button,
+.fsv-segmented radiobutton {
+  background-image: none;
+  background-color: transparent;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @fsv_dim;
+  font-weight: 600;
+  margin: 0;
+  padding: 6px 18px;
+}
+.fsv-segmented button:hover { color: @fsv_text; }
+.fsv-segmented button:checked,
+.fsv-segmented radiobutton:checked { background-color: @fsv_seg_on; color: @fsv_accent; }
+.fsv-segmented radiobutton label { color: inherit; }
+
+/* ---------- Sidebar ---------- */
+.fsv-sidebar { background-color: @fsv_side; border-right: 1px solid @fsv_line; }
+.fsv-sidebar .fsv-section { color: @fsv_dim; font-size: 11px; letter-spacing: 0.14em; padding: 8px 12px; }
+label.fsv-section-title {
+  background-color: @fsv_side;
+  border-bottom: 1px solid @fsv_line;
+  color: @fsv_dim;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  padding: 7px 10px;
+}
+.fsv-sidebar treeview.view,
+.fsv-sidebar list { background-color: transparent; color: @fsv_text; }
+.fsv-sidebar treeview.view { padding: 4px; }
+.fsv-sidebar treeview.view header,
+.fsv-sidebar treeview.view header button {
+  background-image: none;
+  background-color: @fsv_side;
+  color: @fsv_dim;
+  box-shadow: none;
+}
+.fsv-sidebar treeview.view header button {
+  border: 0;
+  border-bottom: 1px solid @fsv_line;
+  border-radius: 0;
+  padding: 5px 8px;
+}
+.fsv-sidebar treeview.view header button:hover { background-color: @fsv_raise; color: @fsv_text; }
+.fsv-sidebar treeview.view:hover { background-color: alpha(@fsv_accent, 0.06); }
+.fsv-sidebar treeview.view:selected,
+.fsv-sidebar treeview.view:selected:focus {
+  background-color: @fsv_sel;
+  color: @fsv_accent;
+  border-radius: 8px;
+}
+.fsv-sidebar treeview.view.expander { color: @fsv_dim; }
+.fsv-sidebar .dim-label, .fsv-size-label { color: @fsv_dim; font-size: 12px; }
+
+/* Thin size bars (GtkLevelBar with class fsv-size + one type class) */
+levelbar.fsv-size trough { background-color: #132230; border: none; border-radius: 2px; min-height: 3px; padding: 0; }
+levelbar.fsv-size block.filled { border: none; border-radius: 2px; min-height: 3px; }
+levelbar.fsv-size.type-code    block.filled { background-color: @fsv_code; }
+levelbar.fsv-size.type-media   block.filled { background-color: @fsv_media; }
+levelbar.fsv-size.type-archive block.filled { background-color: @fsv_archive; }
+levelbar.fsv-size.type-system  block.filled { background-color: @fsv_system; }
+levelbar.fsv-size.type-docs    block.filled { background-color: @fsv_docs; }
+levelbar.fsv-size.type-root    block.filled { background-color: @fsv_root; }
+
+/* ---------- Floating panels over the GL view (put them in a GtkOverlay) ---------- */
+.fsv-viewport {
+  background-image:
+    repeating-linear-gradient(45deg, transparent 0, transparent 39px, alpha(@fsv_grid, 0.07) 40px, transparent 41px),
+    repeating-linear-gradient(135deg, transparent 0, transparent 39px, alpha(@fsv_grid, 0.07) 40px, transparent 41px),
+    linear-gradient(to bottom right, #0f3541, #0a1b27 58%, #090d17);
+}
+.fsv-scene-fade { background-color: #02050a; }
+.fsv-panel {
+  background-color: alpha(@fsv_bar, 0.78);
+  border: 1px solid @fsv_edge;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: @fsv_text;
+  padding: 10px 14px;
+}
+.fsv-panel .fsv-title { font-size: 15px; font-weight: 700; }
+.fsv-panel .fsv-meta  { color: @fsv_dim; font-size: 12px; }
+.fsv-breadcrumb label { color: @fsv_dim; }
+.fsv-breadcrumb label.current { color: @fsv_accent; font-weight: 700; }
+.fsv-context-toolbar { padding: 6px 8px; }
+.fsv-context-toolbar button {
+  background-color: alpha(@fsv_raise, 0.9);
+  border: 1px solid @fsv_edge;
+  border-radius: 7px;
+  color: @fsv_text;
+  padding: 5px 9px;
+}
+.fsv-context-toolbar button:hover { background-color: @fsv_sel; }
+.fsv-properties { padding: 14px; }
+.fsv-properties grid label { color: @fsv_dim; font-size: 12px; }
+.fsv-properties grid label:last-child { color: @fsv_text; }
+.fsv-properties .fsv-property-size { color: @fsv_text; font-size: 28px; font-weight: 300; }
+
+.fsv-legend label { color: @fsv_text; font-size: 11px; font-weight: 300; letter-spacing: 0.14em; }
+.fsv-swatch { border-radius: 3px; min-height: 12px; min-width: 12px; }
+.fsv-swatch.type-code    { background-color: @fsv_code; }
+.fsv-swatch.type-media   { background-color: @fsv_media; }
+.fsv-swatch.type-archive { background-color: @fsv_archive; }
+.fsv-swatch.type-system  { background-color: @fsv_system; }
+.fsv-swatch.type-docs    { background-color: @fsv_docs; }
+.fsv-swatch.type-other   { background-color: @fsv_root; }
+.fsv-swatch.type-root    { background-color: @fsv_root; }
+
+/* ---------- Status bar, scrollbars, tooltips, menus ---------- */
+statusbar.fsv-status, .fsv-status {
+  background-color: @fsv_bar;
+  border-top: 1px solid @fsv_line;
+  color: @fsv_dim;
+  font-size: 12px;
+  min-height: 28px;
+}
+.fsv-status .fsv-status-summary { color: @fsv_text; }
+.fsv-status .fsv-status-path { color: @fsv_dim; font-family: monospace; }
+.fsv-status .fsv-status-fps { color: @fsv_accent; font-family: monospace; }
+.fsv-status separator.vertical { background-color: @fsv_line; min-width: 1px; min-height: 16px; }
+scrollbar { background: transparent; }
+scrollbar trough { background: transparent; border: none; }
+scrollbar slider { background-color: #2a4452; border: none; border-radius: 3px; min-width: 6px; min-height: 6px; }
+scrollbar slider:hover { background-color: #3a6275; }
+
+tooltip.background { background-color: @fsv_bar; border: 1px solid @fsv_edge; border-radius: 8px; color: @fsv_text; }
+popover.background, menu {
+  background-color: @fsv_raise;
+  border: 1px solid @fsv_edge;
+  border-radius: 10px;
+  color: @fsv_text;
+}
+menuitem { padding: 6px 12px; border-radius: 6px; }
+menuitem:hover { background-color: @fsv_sel; color: @fsv_accent; }
+separator { background-color: @fsv_line; min-height: 1px; }

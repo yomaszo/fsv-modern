@@ -27,12 +27,12 @@
 /* Main viewport OpenGL area widget */
 static GtkWidget *viewport_gl_area_w = NULL;
 
-/* FPS counter overlay */
+/* FPS counter in the bottom status bar */
 static GtkWidget *fps_label_w = NULL;
 static boolean fps_display_enabled = FALSE;
-static guint fps_redraw_timer_id = 0;
 static int fps_frame_count = 0;
 static double fps_last_update_time = 0.0;
+static double fps_last_frame_time = 0.0;
 
 /* Opt-in, non-blocking render profiling. Enable with FSV_PROFILE=1. GPU
  * elapsed-time queries are read only after the driver reports completion. */
@@ -603,20 +603,8 @@ ogl_aabb_outside_frustum( mat4 mvp, vec3 bbmin, vec3 bbmax )
 }
 
 
-/* Timer callback that keeps queuing new frames while the FPS counter is
- * shown, so the label reflects the actual achievable frame rate rather
- * than only however often the scene would otherwise need to redraw */
-static gboolean
-fps_redraw_tick( gpointer data )
-{
-	redraw( );
-	return G_SOURCE_CONTINUE;
-}
-
-
-/* Shows/hides the FPS counter overlay, and starts/stops the continuous
- * redraw timer that drives it (only running while the counter is shown,
- * so there's no needless overhead the rest of the time) */
+/* Shows/hides the FPS status item. The counter observes normal render
+ * requests and never schedules extra frames just to refresh itself. */
 void
 ogl_set_fps_display( boolean enabled )
 {
@@ -628,17 +616,12 @@ ogl_set_fps_display( boolean enabled )
 	if (enabled) {
 		fps_frame_count = 0;
 		fps_last_update_time = xgettime( );
+		fps_last_frame_time = 0.0;
+		gtk_label_set_text(GTK_LABEL(fps_label_w), "— FPS");
 		gtk_widget_show( fps_label_w );
-		if (fps_redraw_timer_id == 0)
-			fps_redraw_timer_id = g_timeout_add( 16, fps_redraw_tick, NULL );
 	}
-	else {
+	else
 		gtk_widget_hide( fps_label_w );
-		if (fps_redraw_timer_id != 0) {
-			g_source_remove( fps_redraw_timer_id );
-			fps_redraw_timer_id = 0;
-		}
-	}
 }
 
 
@@ -658,6 +641,9 @@ render(GtkGLArea *area, GdkGLContext *context)
 	static FsvMode prev_mode = FSV_NONE;
 
 	ogl_error();
+	/* Let the overlay's CSS gradient show through the clear color. The pick
+	 * pass still uses its own scissored black clear for exact encoded IDs. */
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 	setup_projection_matrix( TRUE );
 	setup_modelview_matrix( );
@@ -712,10 +698,19 @@ render(GtkGLArea *area, GdkGLContext *context)
 
 	if (fps_display_enabled && fps_label_w != NULL) {
 		double now = xgettime( );
+		double elapsed;
+		/* Start a fresh sampling window after idle periods; otherwise the
+		 * dormant time would make the next interaction report a false low. */
+		if (fps_last_frame_time == 0.0 || now - fps_last_frame_time > 0.5) {
+			fps_frame_count = 0;
+			fps_last_update_time = now;
+		}
+		fps_last_frame_time = now;
 
 		++fps_frame_count;
-		if ((now - fps_last_update_time) >= 0.5) {
-			double fps = (double)fps_frame_count / (now - fps_last_update_time);
+		elapsed = now - fps_last_update_time;
+		if (elapsed >= 0.5) {
+			double fps = (double)fps_frame_count / elapsed;
 			char buf[32];
 			snprintf( buf, sizeof(buf), "%.1f FPS", fps );
 			gtk_label_set_text( GTK_LABEL(fps_label_w), buf );
@@ -840,6 +835,7 @@ ogl_widget_new( void )
 {
 	/* Create the widget */
 	viewport_gl_area_w = gtk_gl_area_new();
+	gtk_gl_area_set_has_alpha(GTK_GL_AREA(viewport_gl_area_w), TRUE);
 
 	// Why oh why doesn't GtkGLArea enable the depth buffer by default?
 	gtk_gl_area_set_has_depth_buffer(GTK_GL_AREA(viewport_gl_area_w), TRUE);
