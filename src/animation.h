@@ -56,6 +56,7 @@ void morph_full( double *var, MorphType type, double target_value, double durati
 void morph( double *var, MorphType type, double target_value, double duration );
 void morph_finish( double *var );
 void morph_break( double *var );
+void morph_shift( double *var, double delta );
 void redraw( void );
 
 

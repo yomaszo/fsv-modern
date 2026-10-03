@@ -60,6 +60,10 @@ static char y_axis_mesg[] = "y_axis";
 
 /* TRUE if the camera is currently moving */
 static boolean camera_currently_moving = FALSE;
+static GNode *treev_follow_node = NULL;
+static RTZvec treev_follow_position;
+static boolean treev_follow_position_valid = FALSE;
+static boolean treev_follow_started_manually = FALSE;
 
 /* Camera state prior to entering bird's-eye-view mode */
 static union AnyCamera pre_birdseye_view_camera;
@@ -822,6 +826,86 @@ treev_get_camera_position( const Camera *cam, RTZvec *pos )
 }
 
 
+/* Return the current TreeV camera aim point for a node. Keep this in one
+ * place so ordinary look-at pans and layout following use identical
+ * leaf/platform rules. */
+static void
+treev_node_aim( GNode *node, RTZvec *aim )
+{
+	boolean collapsing_selected_dir = NODE_IS_DIR(node) &&
+		!dirtree_entry_expanded(node) && !geometry_treev_is_leaf(node);
+
+	if (geometry_treev_is_leaf(node) || collapsing_selected_dir) {
+		GNode *platform_node = collapsing_selected_dir ? node->parent :
+			geometry_treev_platform_node(node);
+		aim->r = geometry_treev_platform_r0(platform_node) +
+			TREEV_GEOM_PARAMS(node)->leaf.distance;
+		aim->theta = geometry_treev_platform_theta(platform_node) +
+			TREEV_GEOM_PARAMS(node)->leaf.theta;
+		aim->z = TREEV_GEOM_PARAMS(platform_node)->platform.height +
+			(MAGIC_NUMBER - 1.0) * TREEV_GEOM_PARAMS(node)->leaf.height;
+	} else {
+		aim->r = geometry_treev_platform_r0(node) +
+			0.3 * TREEV_GEOM_PARAMS(node)->platform.depth -
+			(0.2 * TREEV_PLATFORM_SPACING_DEPTH);
+		aim->theta = geometry_treev_platform_theta(node);
+		aim->z = TREEV_GEOM_PARAMS(node)->platform.height;
+	}
+}
+
+
+boolean
+camera_treev_follow_active( void )
+{
+	return globals.fsv_mode == FSV_TREEV && treev_follow_node != NULL &&
+		(treev_follow_started_manually || !camera->manual_control);
+}
+
+
+void
+camera_treev_follow_begin( GNode *node )
+{
+	if (globals.fsv_mode != FSV_TREEV || node == NULL) {
+		treev_follow_node = NULL;
+		treev_follow_position_valid = FALSE;
+		treev_follow_started_manually = FALSE;
+		return;
+	}
+	treev_follow_node = node;
+	/* Preserve a manually composed view across the layout animation. If
+	 * manual control starts after following began, let the user's input win. */
+	treev_follow_started_manually = camera->manual_control;
+	treev_node_aim(node, &treev_follow_position);
+	treev_follow_position_valid = TRUE;
+}
+
+
+/* Called after TreeV has rearranged for the latest animation values. Shift
+ * the camera target and any active target morph by the node's actual motion. */
+void
+camera_treev_follow_layout( void )
+{
+	RTZvec aim;
+	double dr, dtheta, dz;
+
+	if (!camera_treev_follow_active())
+		return;
+	treev_node_aim(treev_follow_node, &aim);
+	if (!treev_follow_position_valid) {
+		treev_follow_position = aim;
+		treev_follow_position_valid = TRUE;
+		return;
+	}
+	dr = aim.r - treev_follow_position.r;
+	dtheta = aim.theta - treev_follow_position.theta;
+	dz = aim.z - treev_follow_position.z;
+	morph_shift(&TREEV_CAMERA(camera)->target.r, dr);
+	morph_shift(&TREEV_CAMERA(camera)->target.theta, dtheta);
+	morph_shift(&TREEV_CAMERA(camera)->target.z, dz);
+	treev_follow_position = aim;
+}
+
+
 /* Helper function for camera_look_at_full( ) */
 static double
 treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
@@ -861,12 +945,8 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 	boolean collapsing_selected_dir = NODE_IS_DIR(node) && !dirtree_entry_expanded( node ) && !geometry_treev_is_leaf( node );
 
 	if (geometry_treev_is_leaf( node ) || collapsing_selected_dir) {
-		GNode *platform_node = collapsing_selected_dir ? node->parent : geometry_treev_platform_node( node );
-
 		/* Target point */
-		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.distance;
-		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( platform_node ) + TREEV_GEOM_PARAMS(node)->leaf.theta;
-		TREEV_CAMERA(new_cam)->target.z = TREEV_GEOM_PARAMS(platform_node)->platform.height + (MAGIC_NUMBER - 1.0) * TREEV_GEOM_PARAMS(node)->leaf.height;
+		treev_node_aim(node, &TREEV_CAMERA(new_cam)->target);
 
 		/* Distance from target point */
 		top_dist = 2.5 * field_distance( camera->fov, (SQRT_2 * TREEV_LEAF_NODE_EDGE) );
@@ -889,9 +969,7 @@ treev_look_at( GNode *node, MorphType mtype, double pan_time_override )
 	}
 	else {
 		/* Target point */
-		TREEV_CAMERA(new_cam)->target.r = geometry_treev_platform_r0( node ) + 0.3 * TREEV_GEOM_PARAMS(node)->platform.depth - (0.2 * TREEV_PLATFORM_SPACING_DEPTH);
-		TREEV_CAMERA(new_cam)->target.theta = geometry_treev_platform_theta( node );
-		TREEV_CAMERA(new_cam)->target.z = TREEV_GEOM_PARAMS(node)->platform.height;
+		treev_node_aim(node, &TREEV_CAMERA(new_cam)->target);
 
 		/* Distance from target point */
 		height = geometry_treev_max_leaf_height( node );
@@ -1070,6 +1148,8 @@ camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override )
 
 	/* Camera is under our control now */
 	camera->manual_control = FALSE;
+	if (globals.fsv_mode == FSV_TREEV)
+		camera_treev_follow_begin(node);
 
 	camera_currently_moving = TRUE;
 }

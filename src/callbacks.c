@@ -142,6 +142,13 @@ on_help_show_fps_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
 	ogl_set_fps_display( gtk_check_menu_item_get_active(menuitem) );
 }
 
+/* Help -> render profiling */
+void
+on_help_profile_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	ogl_set_profile_enabled( gtk_check_menu_item_get_active(menuitem) );
+}
+
 
 /* Performance toggles -- see geometry.c for what each one does and why its
  * default was chosen. Kept as individual check items, mirroring "Show FPS",
@@ -169,6 +176,12 @@ void
 on_help_mapv_hide_labels_moving_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
 {
 	geometry_set_mapv_hide_labels_moving( gtk_check_menu_item_get_active(menuitem) );
+}
+
+void
+on_help_mapv_lod_toggled( GtkCheckMenuItem *menuitem, gpointer user_data )
+{
+	geometry_set_mapv_lod( gtk_check_menu_item_get_active(menuitem) );
 }
 
 

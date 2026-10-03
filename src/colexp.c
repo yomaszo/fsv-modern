@@ -116,6 +116,8 @@ colexp( GNode *dnode, ColExpMesg mesg )
 	g_assert( NODE_IS_DIR(dnode) );
 
 	if (depth == 0) {
+		if (globals.fsv_mode == FSV_TREEV)
+			camera_treev_follow_begin(globals.current_node);
 #ifdef DEBUG
 		if (mesg != COLEXP_EXPAND_ANY) {
 			/* All ancestor directories must be expanded */
@@ -277,6 +279,12 @@ colexp( GNode *dnode, ColExpMesg mesg )
 		/* Handle the camera semi-intelligently if it is not under
 		 * manual control */
 		if (!camera->manual_control) {
+			/* Make sure camera_look_at_full( ) below reads the latest
+			 * layout for the current deployment values. The animation
+			 * continues to move the layout; TreeV camera following keeps
+			 * the target aligned on subsequent frames. */
+			geometry_treev_force_rearrange( );
+
 			switch (mesg) {
 				case COLEXP_COLLAPSE_RECURSIVE:
 				pan_time = (double)(max_depth + 1) * colexp_time;

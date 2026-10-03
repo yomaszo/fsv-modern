@@ -15,6 +15,7 @@
 #include <gtk/gtk.h>
 
 #include "ogl.h" /* ogl_draw( ) */
+#include "geometry.h" /* geometry_treev_follow_update( ) */
 
 
 /* The framerate is maintained as a rolling average over this
@@ -222,6 +223,33 @@ morph_break( double *var )
 }
 
 
+/* Shift an animated value and every queued endpoint by the same amount.
+ * This lets a camera target follow geometry that moves while a pan is
+ * already in progress, without restarting the pan on every frame. */
+void
+morph_shift( double *var, double delta )
+{
+	Morph shift_morph, *morph;
+	GList *mq_llink;
+
+	if (delta == 0.0)
+		return;
+
+	*var += delta;
+	shift_morph.var = var;
+	mq_llink = g_list_find_custom( morph_queue, &shift_morph, (GCompareFunc)compare_var );
+	if (mq_llink == NULL)
+		return;
+
+	morph = (Morph *)mq_llink->data;
+	while (morph != NULL) {
+		morph->start_value += delta;
+		morph->end_value += delta;
+		morph = morph->next;
+	}
+}
+
+
 /* Driver routine for variable morphing.
  * Return value indicates whether state change occurred or not */
 static boolean
@@ -405,6 +433,9 @@ animation_loop(gpointer data)
 
 	/* Update morphing variables */
 	state_changed = morph_iteration( );
+	/* TreeV's polar layout can move the focused node during expansion.
+	 * Re-arrange and shift the camera target before building this frame. */
+	geometry_treev_follow_update( );
 
 	if (globals.need_redraw) {
 		/* Redraw viewport */

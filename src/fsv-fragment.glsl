@@ -15,8 +15,13 @@ uniform float diffuse;
 uniform float specular;
 uniform bool lightning_enabled;
 uniform bool use_vertex_color;
+uniform bool selection_mode;
 
 void main() {
+  if (selection_mode) {
+    outputColor = vec4(fragVColor, 1.0);
+    return;
+  }
   vec4 base_color = use_vertex_color ? vec4(fragVColor, 1.0) : color;
 
   if (!lightning_enabled) {

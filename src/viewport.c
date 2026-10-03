@@ -70,6 +70,9 @@ viewport_pass_node_table(GNode **new_node_table, size_t ntsize)
 
 	node_table = new_node_table;
 	node_table_size = ntsize;
+	/* The indicated node belongs to the tree represented by the previous
+	 * table and must not survive a filesystem rescan. */
+	indicated_node = NULL;
 }
 
 

@@ -25,6 +25,7 @@
 #include "fsv.h"
 #include "geometry.h"
 #include "gui.h"
+#include "ogl.h"
 #include "viewport.h"
 
 /* Toolbar button icons */
@@ -154,6 +155,8 @@ window_init(GtkApplication *app, gpointer user_data)
 	gui_menu_item_add( menu_w, _("Contents..."), on_help_contents_activate, NULL );
 	gui_separator_add( menu_w );
 	gui_check_menu_item_add( menu_w, _("Show FPS"), FALSE, on_help_show_fps_toggled, NULL );
+	gui_check_menu_item_add( menu_w, _("Enable CPU/GPU render profiling"),
+				 ogl_profile_enabled( ), on_help_profile_toggled, NULL );
 	gui_separator_add( menu_w );
 	/* Performance toggles. Initial check state is read from geometry.c so
 	 * the menu agrees with the actual defaults (and with any env var used
@@ -170,6 +173,9 @@ window_init(GtkApplication *app, gpointer user_data)
 	gui_check_menu_item_add( menu_w, _("MapV: hide labels while camera moves"),
 				 geometry_mapv_hide_labels_moving( ),
 				 on_help_mapv_hide_labels_moving_toggled, NULL );
+	gui_check_menu_item_add( menu_w, _("MapV: reduce labels below readable size"),
+				 geometry_mapv_lod_enabled( ),
+				 on_help_mapv_lod_toggled, NULL );
 	gui_separator_add( menu_w );
 	gui_menu_item_add( menu_w, _("About fsv..."), on_help_about_fsv_activate, NULL );
 

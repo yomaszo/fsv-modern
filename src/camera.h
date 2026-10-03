@@ -75,6 +75,9 @@ void camera_pan_finish( void );
 void camera_pan_break( void );
 #ifdef FSV_ANIMATION_H
 void camera_look_at_full( GNode *node, MorphType mtype, double pan_time_override );
+void camera_treev_follow_begin( GNode *node );
+void camera_treev_follow_layout( void );
+boolean camera_treev_follow_active( void );
 #endif
 void camera_look_at( GNode *node );
 void camera_treev_lpan_look_at( GNode *node, double pan_time_override );

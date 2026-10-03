@@ -55,6 +55,9 @@ static void cursor_hidden_part( void );
 static void cursor_visible_part( void );
 static void cursor_post( void );
 static void queue_uncached_draw( void );
+static void treev_batch_flush( void );
+static void treev_cache_invalidate( void );
+static void mapv_cache_invalidate( void );
 
 
 // Vertex struct for modern OpenGL with normals
@@ -75,7 +78,16 @@ typedef struct ColorVertex {
 	GLfloat position[3];
 	GLfloat normal[3];
 	GLfloat color[3];
+	GLfloat node_id;
 } ColorVertex;
+
+/* Compact per-node parameters for instanced MapV drawing. */
+typedef struct MapVInstance {
+	GLfloat bounds[4];
+	GLfloat shape[4];
+	GLfloat transform_color[4];
+	GLfloat node_id;
+} MapVInstance;
 
 
 // Print the legacy and modern OpenGL projection and modelview matrices.
@@ -99,6 +111,7 @@ debug_print_matrices(int which)
 
 
 static unsigned int highlight_node_id;
+static boolean treev_cache_building;
 
 // Set node color and lightning enabled uniform. GL Program must be in use when
 // calling this.
@@ -143,6 +156,9 @@ static const RGBcolor color_black = {0, 0, 0};
 static void
 drawVertexPos(GLenum mode, VertexPos *vert, size_t vert_cnt, const RGBcolor *color)
 {
+	if (gl.render_mode == RENDERMODE_SELECT && globals.fsv_mode == FSV_TREEV &&
+	    !treev_cache_building)
+		treev_batch_flush( );
 	static GLuint vbo;
 	if (!vbo)
 		glGenBuffers(1, &vbo);
@@ -172,6 +188,9 @@ drawVertexPos(GLenum mode, VertexPos *vert, size_t vert_cnt, const RGBcolor *col
 static void
 drawVertex(GLenum mode, Vertex *vert, size_t vert_cnt, const RGBcolor *color, GNode *node)
 {
+	if (gl.render_mode == RENDERMODE_SELECT && globals.fsv_mode == FSV_TREEV &&
+	    !treev_cache_building)
+		treev_batch_flush( );
 	if (color != NULL)
 		g_assert(node == NULL);
 	else
@@ -215,12 +234,9 @@ drawVertex(GLenum mode, Vertex *vert, size_t vert_cnt, const RGBcolor *color, GN
 #define MAPV_BORDER_PROPORTION	0.01
 #define MAPV_ROOT_ASPECT_RATIO	1.2
 
-/* Labels whose on-screen width would be smaller than this fraction of
- * the camera's current distance from its pivot are skipped entirely,
- * rather than paying for a full text-rendering draw call to produce an
- * unreadably tiny speck. This matters a lot when a directory with many
- * thousands of files is open at once. */
-#define MAPV_LABEL_MIN_SIZE_RATIO	0.01
+/* Skip MapV labels below roughly four pixels high, using the same
+ * projected-size threshold as TreeV. */
+#define MAPV_LABEL_MIN_NDC_SIZE		0.008
 
 /* A directory whose footprint would project to less than this fraction
  * of the screen (in both width and height, in normalized device
@@ -232,12 +248,27 @@ drawVertex(GLenum mode, Vertex *vert, size_t vert_cnt, const RGBcolor *color, GN
  * small, unrelated corner elsewhere, where it wouldn't actually be
  * visible (or occupies only a meaningless sliver of the screen). */
 #define MAPV_GEOMETRY_MIN_NDC_SIZE	0.02
+#define MAPV_FLAT_LOD_NDC_SIZE		0.018
 
 /* Messages for mapv_draw_recursive( ) */
 enum {
 	MAPV_DRAW_GEOMETRY,
-	MAPV_DRAW_LABELS
+	MAPV_DRAW_LABELS,
+	MAPV_DRAW_SUBTREES,
+	MAPV_DRAW_FOLDERS
 };
+
+typedef struct MapVDrawRow {
+	GNode *first;
+	GNode *end;
+	double y0, y1;
+	double zmax;
+} MapVDrawRow;
+
+/* Per-directory row spans mirror the existing treemap layout. They let a
+ * frame reject whole bands of children before inspecting individual nodes. */
+static GHashTable *mapv_draw_rows;
+static GHashTable *mapv_draw_peak_heights;
 
 
 /* Node side face offset ratios, by node type
@@ -314,17 +345,19 @@ geometry_mapv_max_expanded_height( GNode *dnode )
 
 /* Helper function for mapv_init( ).
  * This is, in essence, the MapV layout engine */
-static void
+static double
 mapv_init_recursive( GNode *dnode )
 {
 	struct MapVBlock {
 		GNode *node;
 		double area;
+		double subtree_height;
 	} *block, *next_first_block;
 	struct MapVRow {
 		struct MapVBlock *first_block;
 		double area;
 	} *row = NULL;
+	GArray *draw_rows = g_array_new(FALSE, FALSE, sizeof(MapVDrawRow));
 	MapVGeomParams *gparams;
 	GNode *node;
 	GList *block_list = NULL, *block_llink;
@@ -335,6 +368,7 @@ mapv_init_recursive( GNode *dnode )
 	double nominal_border, border;
 	double scale_factor;
 	double a, b, k;
+	double max_subtree_height = 0.0;
 	int64 size;
 
 	g_assert( NODE_IS_DIR(dnode) );
@@ -350,7 +384,7 @@ mapv_init_recursive( GNode *dnode )
 	/* If this directory has no children,
 	 * there is nothing further to do here */
 	if (dnode->children == NULL)
-		return;
+		goto done;
 
 	/* Obtain dimensions of top face of directory */
 	dir_dims.x = MAPV_NODE_WIDTH(dnode);
@@ -388,6 +422,7 @@ mapv_init_recursive( GNode *dnode )
 		block = NEW(struct MapVBlock);
 		block->node = node;
 		block->area = area;
+		block->subtree_height = 0.0;
 		G_LIST_APPEND(block_list, block);
 
 		node = node->next;
@@ -441,6 +476,8 @@ mapv_init_recursive( GNode *dnode )
 	block_llink = block_list;
 	row_llink = row_list;
 	while (row_llink != NULL) {
+		MapVDrawRow draw_row;
+		double row_zmax = 0.0;
 		row = (struct MapVRow *)row_llink->data;
 		block_dims.y = row->area / dir_dims.x;
 		pos.x = start_pos.x;
@@ -450,6 +487,10 @@ mapv_init_recursive( GNode *dnode )
 			next_first_block = NULL;
 		else
 			next_first_block = ((struct MapVRow *)row_llink->next->data)->first_block;
+		draw_row.first = row->first_block->node;
+		draw_row.end = next_first_block ? next_first_block->node : NULL;
+		draw_row.y1 = pos.y;
+		draw_row.y0 = pos.y - block_dims.y;
 
 		/* Output one row */
 		while (block_llink != NULL) {
@@ -481,18 +522,29 @@ mapv_init_recursive( GNode *dnode )
 				gparams->height = mapv_dir_height;
 
 				/* Recurse into directory */
-				mapv_init_recursive( block->node );
+				block->subtree_height = mapv_init_recursive( block->node );
 			}
 			else
 				gparams->height = mapv_leaf_height;
 
+			row_zmax = MAX(row_zmax, gparams->height + block->subtree_height);
+
 			pos.x -= block_dims.x;
 			block_llink = block_llink->next;
 		}
+		draw_row.zmax = row_zmax;
+		max_subtree_height = MAX(max_subtree_height, row_zmax);
+		g_array_append_val(draw_rows, draw_row);
 
 		pos.y -= block_dims.y;
 		row_llink = row_llink->next;
 	}
+
+	if (mapv_draw_rows)
+		g_hash_table_insert(mapv_draw_rows, dnode, draw_rows);
+	else
+		g_array_unref(draw_rows);
+draw_rows = NULL;
 
 	/* Clean up */
 
@@ -509,6 +561,15 @@ mapv_init_recursive( GNode *dnode )
 		row_llink = row_llink->next;
 	}
 	g_list_free( row_list );
+	done:
+	if (draw_rows)
+		g_array_unref(draw_rows);
+	if (mapv_draw_peak_heights) {
+		double *peak = NEW(double);
+		*peak = max_subtree_height;
+		g_hash_table_insert(mapv_draw_peak_heights, dnode, peak);
+	}
+	return max_subtree_height;
 }
 
 
@@ -519,6 +580,15 @@ mapv_init( void )
 	MapVGeomParams *gparams;
 	XYvec root_dims;
 	double k;
+
+	if (mapv_draw_rows)
+		g_hash_table_destroy(mapv_draw_rows);
+	mapv_draw_rows = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+						      NULL, (GDestroyNotify)g_array_unref);
+	if (mapv_draw_peak_heights)
+		g_hash_table_destroy(mapv_draw_peak_heights);
+	mapv_draw_peak_heights = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+						       NULL, g_free);
 
 	/* Determine dimensions of bottommost (root) node */
 	root_dims.y = sqrt( (double)DIR_NODE_DESC(globals.fstree)->subtree.size / MAPV_ROOT_ASPECT_RATIO );
@@ -534,6 +604,7 @@ mapv_init( void )
 	gparams->height = mapv_dir_height;
 
 	mapv_init_recursive( root_dnode );
+	mapv_cache_invalidate( );
 
 	/* Initial cursor state */
 	if (globals.current_node == root_dnode)
@@ -575,11 +646,65 @@ mapv_camera_pan_finished( void )
  * doesn't matter there, and it needs each node isolated with its own
  * ID-encoded, unlit color anyway. */
 #define MAPV_BATCH_MAX_NODES	3276	/* 3276*20 verts stays under 65536, the GLushort index limit */
+#define MAPV_INSTANCE_BATCH_INITIAL_NODES 8192
 static ColorVertex *mapv_batch_verts = NULL;
 static GLushort *mapv_batch_idx = NULL;
 static size_t mapv_batch_vert_cnt = 0;
 static size_t mapv_batch_idx_cnt = 0;
 static GLuint mapv_batch_vbo, mapv_batch_ebo;
+static MapVInstance *mapv_instances = NULL;
+static size_t mapv_instance_cnt = 0;
+static size_t mapv_instance_capacity = 0;
+static GLuint mapv_instance_vbo, mapv_unit_vbo, mapv_unit_ebo;
+static GLuint mapv_cached_instance_vbo;
+static GLsizei mapv_cached_instance_count;
+static boolean mapv_cache_valid;
+static boolean mapv_cache_dirty = TRUE;
+static boolean mapv_cache_using;
+static boolean mapv_cache_building;
+static double mapv_cache_dirty_since;
+static int mapv_instancing_available = -1;
+static boolean mapv_instancing_enabled( void );
+
+static void
+mapv_cache_invalidate(void)
+{
+	mapv_cache_valid = FALSE;
+	mapv_cache_dirty = TRUE;
+	mapv_cache_dirty_since = xgettime();
+}
+
+/* Store every box in the wide, stable view. Camera motion can then reuse the
+ * instance buffer directly; the normal per-node culling path remains active
+ * for close views where it can skip most of the scene. */
+static boolean
+mapv_cache_overview(void)
+{
+	MapVGeomParams *root_gp;
+	double subtree_height = 0.0;
+	double extent, field_height;
+	if (camera == NULL || root_dnode == NULL || !mapv_instancing_enabled())
+		return FALSE;
+	root_gp = MAPV_GEOM_PARAMS(root_dnode);
+	if (mapv_draw_peak_heights != NULL) {
+		double *peak = g_hash_table_lookup(mapv_draw_peak_heights, root_dnode);
+		if (peak != NULL)
+			subtree_height = *peak;
+	}
+	extent = MAX(MAPV_NODE_WIDTH(root_dnode), MAPV_NODE_DEPTH(root_dnode));
+	extent = MAX(extent, root_gp->height + subtree_height);
+	field_height = camera->distance * tan(RAD(0.5 * camera->fov));
+	return extent > 0.0 && field_height >= 0.25 * extent;
+}
+
+static boolean
+mapv_instancing_enabled( void )
+{
+	if (mapv_instancing_available < 0)
+		mapv_instancing_available = (epoxy_gl_version() >= 33 ||
+			epoxy_has_gl_extension("GL_ARB_instanced_arrays"));
+	return mapv_instancing_available;
+}
 
 /* gl.modelview as it stood right before the traversal that's filling the
  * batch began (i.e. the plain camera view matrix, with none of the
@@ -589,24 +714,218 @@ static GLuint mapv_batch_vbo, mapv_batch_ebo;
  * flushed (drawn) once, after the whole traversal returns -- by which
  * point gl.modelview has been restored to exactly this value, so a
  * single draw call under it renders every node at its correct nested
- * position. mapv_batch_root_modelview_inv is its inverse, precomputed
- * once per frame since inverting it per-node would be wasted work. */
+ * position. The hierarchy's simple Z-only transform is tracked separately
+ * below, so no per-node matrix inversion is needed. */
 static mat4 mapv_batch_root_modelview;
-static mat4 mapv_batch_root_modelview_inv;
+static mat4 mapv_batch_root_mvp;
+/* MapV's hierarchy only translates/scales on Z. Track that relative
+ * transform as two scalars instead of multiplying and inverting matrices
+ * separately for each of the many nodes submitted to the batch. */
+static double mapv_batch_z_scale = 1.0;
+static double mapv_batch_z_offset = 0.0;
 
 /* Call once per frame, before any mapv_gldraw_node( ) calls, to reset
  * the batch (allocating its backing storage on first use) */
 static void
 mapv_batch_begin( void )
 {
-	if (mapv_batch_verts == NULL) {
+	if (mapv_instancing_enabled( )) {
+		if (mapv_instances == NULL) {
+			mapv_instance_capacity = MAPV_INSTANCE_BATCH_INITIAL_NODES;
+			mapv_instances = NEW_ARRAY(MapVInstance, mapv_instance_capacity);
+		}
+		mapv_instance_cnt = 0;
+	} else if (mapv_batch_verts == NULL) {
 		mapv_batch_verts = NEW_ARRAY(ColorVertex, MAPV_BATCH_MAX_NODES * 20);
 		mapv_batch_idx = NEW_ARRAY(GLushort, MAPV_BATCH_MAX_NODES * 30);
 	}
 	mapv_batch_vert_cnt = 0;
 	mapv_batch_idx_cnt = 0;
+	mapv_cache_using = gl.render_mode == RENDERMODE_RENDER &&
+		mapv_cache_valid && !mapv_cache_dirty && mapv_cache_overview();
+	mapv_cache_building = gl.render_mode == RENDERMODE_RENDER &&
+		!mapv_cache_using && mapv_cache_dirty && mapv_cache_overview() &&
+		(xgettime() - mapv_cache_dirty_since) >= 0.25;
+	mapv_batch_z_scale = 1.0;
+	mapv_batch_z_offset = 0.0;
 	glm_mat4_copy(gl.modelview, mapv_batch_root_modelview);
-	glm_mat4_inv(mapv_batch_root_modelview, mapv_batch_root_modelview_inv);
+	glm_mat4_mul(gl.projection, mapv_batch_root_modelview, mapv_batch_root_mvp);
+}
+
+/* Upload one shared unit box, then submit the per-node parameters as
+ * instances. A dozen floats describe a node, versus 180 floats plus 30
+ * indices in the expanded-vertex batch. */
+static void
+mapv_instance_flush( void )
+{
+	static const Vertex unit_vertices[20] = {
+	    {{0,1,0},{0, 1,0}}, {{0,1,1},{0, 1,0}}, {{1,1,0},{0, 1,0}}, {{1,1,1},{0, 1,0}},
+	    {{1,1,0},{1, 0,0}}, {{1,1,1},{1, 0,0}}, {{1,0,0},{1, 0,0}}, {{1,0,1},{1, 0,0}},
+	    {{1,0,0},{0,-1,0}}, {{1,0,1},{0,-1,0}}, {{0,0,0},{0,-1,0}}, {{0,0,1},{0,-1,0}},
+	    {{0,0,0},{-1,0,0}}, {{0,0,1},{-1,0,0}}, {{0,1,0},{-1,0,0}}, {{0,1,1},{-1,0,0}},
+	    {{0,0,1},{0,0,1}}, {{1,0,1},{0,0,1}}, {{0,1,1},{0,0,1}}, {{1,1,1},{0,0,1}}
+	};
+	static const GLushort unit_indices[30] = {
+	    0,1,2, 2,1,3, 4,5,6, 6,5,7, 8,9,10, 10,9,11,
+	    12,13,14, 14,13,15, 16,17,18, 18,17,19
+	};
+	mat4 root_mvp;
+	mat3 root_normal_matrix;
+
+	if (mapv_instance_cnt == 0)
+		return;
+
+	if (!mapv_unit_vbo) {
+		glGenBuffers(1, &mapv_unit_vbo);
+		glBindBuffer(GL_ARRAY_BUFFER, mapv_unit_vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(unit_vertices), unit_vertices, GL_STATIC_DRAW);
+		glGenBuffers(1, &mapv_unit_ebo);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mapv_unit_ebo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(unit_indices), unit_indices, GL_STATIC_DRAW);
+		glGenBuffers(1, &mapv_instance_vbo);
+	}
+
+	glBindBuffer(GL_ARRAY_BUFFER, mapv_unit_vbo);
+	glEnableVertexAttribArray(gl.position_location);
+	glVertexAttribPointer(gl.position_location, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+			      (void *)offsetof(Vertex, position));
+	glEnableVertexAttribArray(gl.normal_location);
+	glVertexAttribPointer(gl.normal_location, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+			      (void *)offsetof(Vertex, normal));
+
+	glBindBuffer(GL_ARRAY_BUFFER, mapv_instance_vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(MapVInstance) * mapv_instance_cnt,
+		     mapv_instances, GL_STREAM_DRAW);
+	glEnableVertexAttribArray(gl.instance_bounds_location);
+	glVertexAttribPointer(gl.instance_bounds_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, bounds));
+	glVertexAttribDivisor(gl.instance_bounds_location, 1);
+	glEnableVertexAttribArray(gl.instance_shape_location);
+	glVertexAttribPointer(gl.instance_shape_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, shape));
+	glVertexAttribDivisor(gl.instance_shape_location, 1);
+	glEnableVertexAttribArray(gl.instance_transform_color_location);
+	glVertexAttribPointer(gl.instance_transform_color_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, transform_color));
+	glVertexAttribDivisor(gl.instance_transform_color_location, 1);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mapv_unit_ebo);
+
+	glm_mat4_mul(gl.projection, mapv_batch_root_modelview, root_mvp);
+	glm_mat4_pick3(mapv_batch_root_modelview, root_normal_matrix);
+	glm_mat3_inv(root_normal_matrix, root_normal_matrix);
+	glm_mat3_transpose(root_normal_matrix);
+	glUseProgram(gl.program);
+	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)mapv_batch_root_modelview);
+	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
+	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
+	glUniform1i(gl.lightning_enabled_location,
+		    gl.render_mode == RENDERMODE_RENDER);
+	glUniform1i(gl.use_vertex_color_location, 1);
+	glUniform1i(gl.use_node_id_location, 1);
+	glUniform1i(gl.selection_mode_location,
+		    gl.render_mode == RENDERMODE_SELECT);
+	glUniform1f(gl.highlighted_node_id_location, (GLfloat)highlight_node_id);
+	glUniform1i(gl.instanced_geometry_location, 1);
+	glUniform1i(gl.instanced_lod_dynamic_location, 0);
+	glEnableVertexAttribArray(gl.instance_node_id_location);
+	glVertexAttribPointer(gl.instance_node_id_location, 1, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, node_id));
+	glVertexAttribDivisor(gl.instance_node_id_location, 1);
+	glDrawElementsInstanced(GL_TRIANGLES, 30, GL_UNSIGNED_SHORT, 0,
+			 (GLsizei)mapv_instance_cnt);
+	glUniform1i(gl.instanced_geometry_location, 0);
+	glUniform1i(gl.instanced_lod_dynamic_location, 0);
+	glUniform1i(gl.use_vertex_color_location, 0);
+	glUniform1i(gl.use_node_id_location, 0);
+	glUniform1i(gl.selection_mode_location, 0);
+	glUseProgram(0);
+	glVertexAttribDivisor(gl.instance_bounds_location, 0);
+	glVertexAttribDivisor(gl.instance_shape_location, 0);
+	glVertexAttribDivisor(gl.instance_transform_color_location, 0);
+	glVertexAttribDivisor(gl.instance_node_id_location, 0);
+	glDisableVertexAttribArray(gl.instance_bounds_location);
+	glDisableVertexAttribArray(gl.instance_shape_location);
+	glDisableVertexAttribArray(gl.instance_transform_color_location);
+	glDisableVertexAttribArray(gl.instance_node_id_location);
+
+	/* A full batch can flush mid-traversal; restore matrices for the current
+	 * hierarchy frame before outlines or later siblings are submitted. */
+	ogl_upload_matrices(FALSE);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(MapVInstance) * mapv_instance_cnt,
+		     NULL, GL_STREAM_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	mapv_instance_cnt = 0;
+}
+
+/* Draw the stable overview instance buffer without walking the file tree or
+ * streaming the same records again. */
+static void
+mapv_cached_instance_draw(void)
+{
+	mat4 root_mvp;
+	mat3 root_normal_matrix;
+	if (mapv_cached_instance_count == 0 || mapv_unit_vbo == 0 ||
+	    mapv_unit_ebo == 0 || mapv_cached_instance_vbo == 0)
+		return;
+	glBindBuffer(GL_ARRAY_BUFFER, mapv_unit_vbo);
+	glEnableVertexAttribArray(gl.position_location);
+	glVertexAttribPointer(gl.position_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(Vertex), (void *)offsetof(Vertex, position));
+	glEnableVertexAttribArray(gl.normal_location);
+	glVertexAttribPointer(gl.normal_location, 3, GL_FLOAT, GL_FALSE,
+			      sizeof(Vertex), (void *)offsetof(Vertex, normal));
+	glBindBuffer(GL_ARRAY_BUFFER, mapv_cached_instance_vbo);
+	glEnableVertexAttribArray(gl.instance_bounds_location);
+	glVertexAttribPointer(gl.instance_bounds_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, bounds));
+	glVertexAttribDivisor(gl.instance_bounds_location, 1);
+	glEnableVertexAttribArray(gl.instance_shape_location);
+	glVertexAttribPointer(gl.instance_shape_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, shape));
+	glVertexAttribDivisor(gl.instance_shape_location, 1);
+	glEnableVertexAttribArray(gl.instance_transform_color_location);
+	glVertexAttribPointer(gl.instance_transform_color_location, 4, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, transform_color));
+	glVertexAttribDivisor(gl.instance_transform_color_location, 1);
+	glEnableVertexAttribArray(gl.instance_node_id_location);
+	glVertexAttribPointer(gl.instance_node_id_location, 1, GL_FLOAT, GL_FALSE,
+			      sizeof(MapVInstance), (void *)offsetof(MapVInstance, node_id));
+	glVertexAttribDivisor(gl.instance_node_id_location, 1);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mapv_unit_ebo);
+	glm_mat4_mul(gl.projection, gl.modelview, root_mvp);
+	glm_mat4_pick3(gl.modelview, root_normal_matrix);
+	glm_mat3_inv(root_normal_matrix, root_normal_matrix);
+	glm_mat3_transpose(root_normal_matrix);
+	glUseProgram(gl.program);
+	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)gl.modelview);
+	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
+	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
+	glUniform1i(gl.lightning_enabled_location, 1);
+	glUniform1i(gl.use_vertex_color_location, 1);
+	glUniform1i(gl.use_node_id_location, 1);
+	glUniform1i(gl.selection_mode_location, 0);
+	glUniform1f(gl.highlighted_node_id_location, (GLfloat)highlight_node_id);
+	glUniform1i(gl.instanced_geometry_location, 1);
+	glUniform1i(gl.instanced_lod_dynamic_location, 1);
+	glDrawElementsInstanced(GL_TRIANGLES, 30, GL_UNSIGNED_SHORT, 0,
+			 mapv_cached_instance_count);
+	glUniform1i(gl.instanced_geometry_location, 0);
+	glUniform1i(gl.instanced_lod_dynamic_location, 0);
+	glUniform1i(gl.use_vertex_color_location, 0);
+	glUniform1i(gl.use_node_id_location, 0);
+	glUniform1i(gl.selection_mode_location, 0);
+	glUseProgram(0);
+	glVertexAttribDivisor(gl.instance_bounds_location, 0);
+	glVertexAttribDivisor(gl.instance_shape_location, 0);
+	glVertexAttribDivisor(gl.instance_transform_color_location, 0);
+	glVertexAttribDivisor(gl.instance_node_id_location, 0);
+	glDisableVertexAttribArray(gl.instance_bounds_location);
+	glDisableVertexAttribArray(gl.instance_shape_location);
+	glDisableVertexAttribArray(gl.instance_transform_color_location);
+	glDisableVertexAttribArray(gl.instance_node_id_location);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 /* Uploads and draws everything accumulated in the batch so far (in one
@@ -615,6 +934,11 @@ mapv_batch_begin( void )
 static void
 mapv_batch_flush( void )
 {
+	if (mapv_instancing_enabled( )) {
+		mapv_instance_flush( );
+		return;
+	}
+
 	if (mapv_batch_vert_cnt == 0)
 		return;
 
@@ -638,6 +962,8 @@ mapv_batch_flush( void )
 	glEnableVertexAttribArray(gl.vcolor_location);
 	glVertexAttribPointer(gl.vcolor_location, 3, GL_FLOAT, GL_FALSE,
 			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, color));
+	glVertexAttribPointer(gl.node_id_location, 1, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, node_id));
 
 	/* The batch's vertices were baked into mapv_batch_root_modelview's
 	 * frame at add-time (see mapv_batch_add_node( )), NOT whatever
@@ -660,8 +986,11 @@ mapv_batch_flush( void )
 	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)mapv_batch_root_modelview);
 	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
 	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
-	glUniform1i(gl.lightning_enabled_location, 1);
+	glUniform1i(gl.lightning_enabled_location,
+		    gl.render_mode == RENDERMODE_RENDER);
 	glUniform1i(gl.use_vertex_color_location, 1);
+	glUniform1i(gl.use_node_id_location, 0);
+	glUniform1i(gl.selection_mode_location, 0);
 
 	glDrawElements(GL_TRIANGLES, mapv_batch_idx_cnt, GL_UNSIGNED_SHORT, 0);
 
@@ -682,6 +1011,76 @@ mapv_batch_flush( void )
 	mapv_batch_vert_cnt = 0;
 	mapv_batch_idx_cnt = 0;
 }
+
+/* Appends a compact per-instance node record. */
+static void
+mapv_instance_add_node( GNode *node )
+{
+	MapVGeomParams *gparams = MAPV_GEOM_PARAMS(node);
+	MapVInstance *instance;
+	double width = MAPV_NODE_WIDTH(node);
+	double depth = MAPV_NODE_DEPTH(node);
+	double height = gparams->height;
+	double slant = mapv_side_slant_ratios[NODE_DESC(node)->type];
+	double lod_scale = mapv_batch_z_scale;
+	GLfloat color[3];
+	int i;
+	vec4 clip_center;
+	double cx = 0.5 * (gparams->c0.x + gparams->c1.x);
+	double cy = 0.5 * (gparams->c0.y + gparams->c1.y);
+	double cz = mapv_batch_z_offset + lod_scale * 0.5 * height;
+	vec4 center = {(float)cx, (float)cy, (float)cz, 1.0f};
+	glm_mat4_mulv(mapv_batch_root_mvp, center, clip_center);
+	if (gl.render_mode == RENDERMODE_RENDER && clip_center[3] > 0.0001f) {
+		double inv_w = 1.0 / clip_center[3];
+		double ndc_w = (fabs(mapv_batch_root_mvp[0][0]) * width +
+				fabs(mapv_batch_root_mvp[1][0]) * depth +
+				fabs(mapv_batch_root_mvp[2][0]) * lod_scale * height) * inv_w;
+		double ndc_h = (fabs(mapv_batch_root_mvp[0][1]) * width +
+			fabs(mapv_batch_root_mvp[1][1]) * depth +
+			fabs(mapv_batch_root_mvp[2][1]) * lod_scale * height) * inv_w;
+		if (MAX(ndc_w, ndc_h) < MAPV_FLAT_LOD_NDC_SIZE)
+			lod_scale = -lod_scale;
+	}
+
+	if (mapv_instance_cnt >= mapv_instance_capacity) {
+		if (mapv_instance_capacity > G_MAXSIZE / 2 / sizeof(*mapv_instances))
+			g_error("MapV instance buffer exceeded addressable memory");
+		size_t new_capacity = mapv_instance_capacity * 2;
+		g_assert(new_capacity > mapv_instance_capacity);
+		mapv_instances = g_realloc_n(mapv_instances, new_capacity,
+					      sizeof(*mapv_instances));
+		mapv_instance_capacity = new_capacity;
+	}
+
+	if (gl.render_mode == RENDERMODE_SELECT) {
+		GLuint id = NODE_DESC(node)->id;
+		color[0] = (GLfloat)(id & 0xFF) / 255.0f;
+		color[1] = (GLfloat)((id >> 8) & 0xFF) / 255.0f;
+		color[2] = (GLfloat)((id >> 16) & 0xFF) / 255.0f;
+	} else {
+		memcpy(color, NODE_DESC(node)->color, sizeof(color));
+		if (NODE_DESC(node)->id == highlight_node_id)
+			for (i = 0; i < 3; i++)
+				color[i] *= 1.3f;
+	}
+
+	instance = &mapv_instances[mapv_instance_cnt++];
+	instance->bounds[0] = (GLfloat)gparams->c0.x;
+	instance->bounds[1] = (GLfloat)gparams->c0.y;
+	instance->bounds[2] = (GLfloat)gparams->c1.x;
+	instance->bounds[3] = (GLfloat)gparams->c1.y;
+	instance->shape[0] = (GLfloat)height;
+	instance->shape[1] = (GLfloat)MIN(height, slant * width);
+	instance->shape[2] = (GLfloat)MIN(height, slant * depth);
+	instance->shape[3] = (GLfloat)lod_scale;
+	instance->transform_color[0] = (GLfloat)mapv_batch_z_offset;
+	instance->transform_color[1] = color[0];
+	instance->transform_color[2] = color[1];
+	instance->transform_color[3] = color[2];
+	instance->node_id = (GLfloat)NODE_DESC(node)->id;
+}
+
 
 /* Appends node's 20-vertex/30-index box geometry (with its lit,
  * highlight-adjusted color baked into each vertex) to the batch,
@@ -705,14 +1104,26 @@ mapv_batch_add_node( GNode *node )
 	    16, 17, 18, 18, 17, 19
 	};
 
+	if (mapv_instancing_enabled( )) {
+		mapv_instance_add_node( node );
+		return;
+	}
+
 	if ((mapv_batch_vert_cnt + 20) > (size_t)(MAPV_BATCH_MAX_NODES * 20))
 		mapv_batch_flush( );
 
-	/* Same color logic as node_set_color( )'s RENDERMODE_RENDER branch */
-	memcpy(color, NODE_DESC(node)->color, 3 * sizeof(GLfloat));
-	if (NODE_DESC(node)->id == highlight_node_id) {
-		for (i = 0; i < 3; i++)
-			color[i] *= 1.3f;
+	if (gl.render_mode == RENDERMODE_SELECT) {
+		GLuint id = NODE_DESC(node)->id;
+		color[0] = (GLfloat)(id & 0xFF) / 255.0f;
+		color[1] = (GLfloat)((id >> 8) & 0xFF) / 255.0f;
+		color[2] = (GLfloat)((id >> 16) & 0xFF) / 255.0f;
+	} else {
+		/* Same color logic as node_set_color( )'s render branch. */
+		memcpy(color, NODE_DESC(node)->color, 3 * sizeof(GLfloat));
+		if (NODE_DESC(node)->id == highlight_node_id) {
+			for (i = 0; i < 3; i++)
+				color[i] *= 1.3f;
+		}
 	}
 
 	dims.x = MAPV_NODE_WIDTH(node);
@@ -733,30 +1144,13 @@ mapv_batch_add_node( GNode *node )
 
 	base = mapv_batch_vert_cnt;
 
-	/* This node's transform relative to mapv_batch_root_modelview --
-	 * i.e. just its own slice of the translate/scale stack
-	 * mapv_draw_recursive( ) accumulated while descending to reach it,
-	 * with the shared root frame factored back out. Baking this into
-	 * each vertex now (position AND normal, the latter needing the
-	 * usual inverse-transpose since the stack includes non-uniform Z
-	 * scaling for expand/collapse animation) is what lets every node's
-	 * geometry end up correctly placed after the batch is drawn once,
-	 * at the end, under mapv_batch_root_modelview alone. */
-	mat4 local_accum;
-	mat3 normal_matrix_local;
-	glm_mat4_mul(mapv_batch_root_modelview_inv, gl.modelview, local_accum);
-	glm_mat4_pick3(local_accum, normal_matrix_local);
-	glm_mat3_inv(normal_matrix_local, normal_matrix_local);
-	glm_mat3_transpose(normal_matrix_local);
+	/* Bake the current hierarchical Z transform into each vertex. X/Y are
+	 * already laid out in root coordinates; only Z varies with expansion. */
 
 #define CV(px, py, pz, nx, ny, nz) do { \
-	vec4 _p = { (float)(px), (float)(py), (float)(pz), 1.0f }; \
-	vec4 _tp; \
-	vec3 _n = { (float)(nx), (float)(ny), (float)(nz) }; \
-	vec3 _tn; \
-	glm_mat4_mulv(local_accum, _p, _tp); \
-	glm_mat3_mulv(normal_matrix_local, _n, _tn); \
-	mapv_batch_verts[mapv_batch_vert_cnt++] = (ColorVertex){{_tp[0], _tp[1], _tp[2]}, {_tn[0], _tn[1], _tn[2]}, {color[0], color[1], color[2]}}; \
+	GLfloat _tz = (GLfloat)(mapv_batch_z_offset + mapv_batch_z_scale * (pz)); \
+	GLfloat _nz = (GLfloat)((nz) / mapv_batch_z_scale); \
+	mapv_batch_verts[mapv_batch_vert_cnt++] = (ColorVertex){{(GLfloat)(px), (GLfloat)(py), _tz}, {(GLfloat)(nx), (GLfloat)(ny), _nz}, {color[0], color[1], color[2]}}; \
 } while (0)
 
 	CV(gparams->c0.x, gparams->c1.y, 0.0, 0.0, normal.y, normal_z_ny); /* Rear face */
@@ -798,7 +1192,7 @@ mapv_gldraw_node( GNode *node )
 	double normal_z_nx, normal_z_ny;
 	double a, b, k;
 
-	if (gl.render_mode == RENDERMODE_RENDER) {
+	if (gl.render_mode == RENDERMODE_RENDER || mapv_instancing_enabled( )) {
 		mapv_batch_add_node( node );
 		return;
 	}
@@ -984,18 +1378,162 @@ mapv_gldraw_folder( GNode *dnode )
 /* Builds the children of a directory (but not the directory itself;
  * that geometry belongs to the parent) */
 static void
+mapv_extract_frustum_planes(mat4 mvp, vec4 planes[6])
+{
+	int i;
+	for (i = 0; i < 4; i++) {
+		planes[0][i] = mvp[i][3] + mvp[i][0];
+		planes[1][i] = mvp[i][3] - mvp[i][0];
+		planes[2][i] = mvp[i][3] + mvp[i][1];
+		planes[3][i] = mvp[i][3] - mvp[i][1];
+		planes[4][i] = mvp[i][3] + mvp[i][2];
+		planes[5][i] = mvp[i][3] - mvp[i][2];
+	}
+}
+
+static boolean
+mapv_aabb_outside_frustum(vec4 planes[6], vec3 bbmin, vec3 bbmax)
+{
+	int i;
+	for (i = 0; i < 6; i++) {
+		float px = planes[i][0] >= 0.0f ? bbmax[0] : bbmin[0];
+		float py = planes[i][1] >= 0.0f ? bbmax[1] : bbmin[1];
+		float pz = planes[i][2] >= 0.0f ? bbmax[2] : bbmin[2];
+		float d = planes[i][0] * px + planes[i][1] * py +
+			  planes[i][2] * pz + planes[i][3];
+		if (d < 0.0f)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static boolean
+mapv_aabb_inside_frustum(vec4 planes[6], vec3 bbmin, vec3 bbmax)
+{
+	int i;
+	for (i = 0; i < 6; i++) {
+		float nx = planes[i][0] >= 0.0f ? bbmin[0] : bbmax[0];
+		float ny = planes[i][1] >= 0.0f ? bbmin[1] : bbmax[1];
+		float nz = planes[i][2] >= 0.0f ? bbmin[2] : bbmax[2];
+		float d = planes[i][0] * nx + planes[i][1] * ny +
+			  planes[i][2] * nz + planes[i][3];
+		if (d < 0.0f)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static boolean
+mapv_node_outside_frustum(GNode *node, vec4 planes[6], double max_height)
+{
+	MapVGeomParams *gp = MAPV_GEOM_PARAMS(node);
+	vec3 bbmin = {(float)MIN(gp->c0.x, gp->c1.x),
+		      (float)MIN(gp->c0.y, gp->c1.y), 0.0f};
+	vec3 bbmax = {(float)MAX(gp->c0.x, gp->c1.x),
+		      (float)MAX(gp->c0.y, gp->c1.y), (float)max_height};
+	return mapv_aabb_outside_frustum(planes, bbmin, bbmax);
+}
+
+static void mapv_apply_label(GNode *node);
+static void mapv_draw_recursive(GNode *dnode, int action);
+
+static void
+mapv_process_children(GNode *dnode, int action, int recurse_action)
+{
+	GArray *rows = mapv_draw_rows ? g_hash_table_lookup(mapv_draw_rows, dnode) : NULL;
+	mat4 mvp;
+	vec4 planes[6];
+	guint r;
+
+	glm_mat4_mul(gl.projection, gl.modelview, mvp);
+	mapv_extract_frustum_planes(mvp, planes);
+	if (rows) {
+		for (r = 0; r < rows->len; r++) {
+			MapVDrawRow *row = &g_array_index(rows, MapVDrawRow, r);
+			vec3 bbmin = {(float)MIN(MAPV_GEOM_PARAMS(dnode)->c0.x,
+						 MAPV_GEOM_PARAMS(dnode)->c1.x),
+				      (float)row->y0, 0.0f};
+			vec3 bbmax = {(float)MAX(MAPV_GEOM_PARAMS(dnode)->c0.x,
+						 MAPV_GEOM_PARAMS(dnode)->c1.x),
+				      (float)row->y1, (float)row->zmax};
+			GNode *node;
+			boolean row_inside;
+			if (!mapv_cache_building &&
+			    mapv_aabb_outside_frustum(planes, bbmin, bbmax))
+				continue;
+			row_inside = mapv_cache_building ||
+				mapv_aabb_inside_frustum(planes, bbmin, bbmax);
+			for (node = row->first; node && node != row->end; node = node->next) {
+				if (action == MAPV_DRAW_SUBTREES) {
+					if (NODE_IS_DIR(node))
+						mapv_draw_recursive(node, recurse_action);
+				} else if (mapv_cache_building || row_inside || !mapv_node_outside_frustum(node, planes,
+									 MAPV_GEOM_PARAMS(node)->height)) {
+					if (action == MAPV_DRAW_GEOMETRY)
+						mapv_gldraw_node(node);
+					else if (!NODE_IS_DIR(node))
+						mapv_apply_label(node);
+				}
+			}
+		}
+		return;
+	}
+
+	/* Fallback during the first layout or if a node was inserted without
+	 * rebuilding the cached row spans. */
+	for (GNode *node = dnode->children; node; node = node->next) {
+		if (action == MAPV_DRAW_SUBTREES) {
+			if (NODE_IS_DIR(node))
+				mapv_draw_recursive(node, recurse_action);
+		} else if (mapv_cache_building || !mapv_node_outside_frustum(node, planes,
+								 MAPV_GEOM_PARAMS(node)->height)) {
+			if (action == MAPV_DRAW_GEOMETRY)
+				mapv_gldraw_node(node);
+			else if (!NODE_IS_DIR(node))
+				mapv_apply_label(node);
+		}
+	}
+}
+
+static void
 mapv_build_dir( GNode *dnode )
 {
-	GNode *node;
-
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
+	mapv_process_children(dnode, MAPV_DRAW_GEOMETRY, MAPV_DRAW_GEOMETRY);
+}
 
-	node = dnode->children;
-	while (node != NULL) {
-		/* Draw node */
-		mapv_gldraw_node( node );
-		ogl_error();
-		node = node->next;
+
+/* Projected-height LOD for MapV labels. Measure along the label's local Y
+ * axis (the glyph height direction), as TreeV measures along its radial
+ * label axis. If the segment crosses the near plane, keep it conservatively. */
+static boolean
+mapv_label_too_small( const XYZvec *pos, double world_height )
+{
+	mat4 mvp;
+	double clip[2][4];
+	int endpoint, k;
+
+	if (!geometry_mapv_lod_enabled( ))
+		return FALSE;
+
+	glm_mat4_mul(gl.projection, gl.modelview, mvp);
+	for (endpoint = 0; endpoint < 2; endpoint++) {
+		double y = pos->y + (endpoint ? 0.5 : -0.5) * world_height;
+		for (k = 0; k < 4; k++)
+			clip[endpoint][k] = (double)mvp[0][k] * pos->x +
+				(double)mvp[1][k] * y + (double)mvp[2][k] * pos->z +
+				(double)mvp[3][k];
+	}
+
+	if (clip[0][3] <= 0.0001 && clip[1][3] <= 0.0001)
+		return TRUE;
+	if (clip[0][3] <= 0.0001 || clip[1][3] <= 0.0001)
+		return FALSE;
+
+	{
+		double dx = clip[0][0] / clip[0][3] - clip[1][0] / clip[1][3];
+		double dy = clip[0][1] / clip[0][3] - clip[1][1] / clip[1][3];
+		return hypot(dx, dy) < MAPV_LABEL_MIN_NDC_SIZE;
 	}
 }
 
@@ -1019,11 +1557,6 @@ mapv_apply_label( GNode *node )
 	label_dims.x = 0.8125 * dims.x;
 	label_dims.y = (2.0 - MAGIC_NUMBER) * dims.y;
 
-	/* Skip labels too small to read at the camera's current distance --
-	 * see MAPV_LABEL_MIN_SIZE_RATIO */
-	if (label_dims.x < (MAPV_LABEL_MIN_SIZE_RATIO * camera->distance))
-		return;
-
 	/* Center position of label */
 	label_pos.x = MAPV_NODE_CENTER_X(node);
 	label_pos.y = MAPV_NODE_CENTER_Y(node);
@@ -1031,6 +1564,8 @@ mapv_apply_label( GNode *node )
 		label_pos.z = 0.0;
 	else
 		label_pos.z = MAPV_GEOM_PARAMS(node)->height;
+	if (mapv_label_too_small(&label_pos, label_dims.y))
+		return;
 
 	text_draw_straight( NODE_DESC(node)->name, &label_pos, &label_dims );
 }
@@ -1041,14 +1576,16 @@ static void
 mapv_draw_recursive( GNode *dnode, int action )
 {
 	DirNodeDesc *dir_ndesc;
-	GNode *node;
 	boolean dir_collapsed;
 	boolean dir_expanded;
+	double saved_z_scale, saved_z_offset;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
 
 	mat4 tmpmat;
 	glm_mat4_copy(gl.modelview, tmpmat);
+	saved_z_scale = mapv_batch_z_scale;
+	saved_z_offset = mapv_batch_z_offset;
 
 	/* Frustum cull: if dnode's own footprint (which entirely contains
 	 * all of its descendants' footprints, since they're laid out
@@ -1064,8 +1601,12 @@ mapv_draw_recursive( GNode *dnode, int action )
 	 * The metanode is skipped here: unlike every real directory, its
 	 * c0/c1 are never actually laid out (only its height is set, in
 	 * mapv_init( )), so they can't be used for a meaningful bound. */
-	if (!NODE_IS_METANODE(dnode)) {
+	if (!mapv_cache_building && !NODE_IS_METANODE(dnode)) {
 		MapVGeomParams *dnode_gp = MAPV_GEOM_PARAMS(dnode);
+		double *subtree_peak = mapv_draw_peak_heights ?
+			g_hash_table_lookup(mapv_draw_peak_heights, dnode) : NULL;
+		float full_height = (float)(dnode_gp->height +
+					    (subtree_peak ? *subtree_peak : 0.0));
 		vec3 bbmin, bbmax;
 		mat4 mvp;
 		boolean culled;
@@ -1074,8 +1615,11 @@ mapv_draw_recursive( GNode *dnode, int action )
 		bbmax[0] = (float)MAX(dnode_gp->c0.x, dnode_gp->c1.x);
 		bbmin[1] = (float)MIN(dnode_gp->c0.y, dnode_gp->c1.y);
 		bbmax[1] = (float)MAX(dnode_gp->c0.y, dnode_gp->c1.y);
-		bbmin[2] = -1.0e6f;
-		bbmax[2] = 1.0e6f;
+		/* Descendants are stacked above this directory's top face.
+		 * Bound the full tower, not only the directory block itself, so
+		 * steep camera angles cannot cull visible child platforms. */
+		bbmin[2] = 0.0f;
+		bbmax[2] = full_height;
 
 		glm_mat4_mul(gl.projection, tmpmat, mvp);
 		culled = ogl_aabb_outside_frustum(mvp, bbmin, bbmax);
@@ -1098,7 +1642,7 @@ mapv_draw_recursive( GNode *dnode, int action )
 			 * where the visible content actually is. Testing only the
 			 * base let this tiny/offscreen check wrongly cull boxes
 			 * whose top (and children) were still clearly on screen. */
-			float dnode_height = (float)dnode_gp->height;
+			float dnode_height = full_height;
 			float cx[8] = { bbmin[0], bbmax[0], bbmin[0], bbmax[0],
 					bbmin[0], bbmax[0], bbmin[0], bbmax[0] };
 			float cy[8] = { bbmin[1], bbmin[1], bbmax[1], bbmax[1],
@@ -1162,6 +1706,7 @@ mapv_draw_recursive( GNode *dnode, int action )
 	}
 
 	glm_translate(gl.modelview, (vec3){0.0f, 0.0f, MAPV_GEOM_PARAMS(dnode)->height});
+	mapv_batch_z_offset += mapv_batch_z_scale * MAPV_GEOM_PARAMS(dnode)->height;
 
 	dir_ndesc = DIR_NODE_DESC(dnode);
 	dir_collapsed = DIR_COLLAPSED(dnode);
@@ -1170,6 +1715,7 @@ mapv_draw_recursive( GNode *dnode, int action )
 	if (!dir_collapsed && !dir_expanded) {
 		/* Grow/shrink children heightwise */
 		glm_scale(gl.modelview, (vec3){1.0f, 1.0f, dir_ndesc->deployment});
+		mapv_batch_z_scale *= dir_ndesc->deployment;
 	}
 
 	ogl_error();
@@ -1183,6 +1729,8 @@ mapv_draw_recursive( GNode *dnode, int action )
 			mapv_gldraw_folder(dnode);
 		else
 			mapv_build_dir(dnode);
+	} else if (action == MAPV_DRAW_FOLDERS && dir_collapsed) {
+		mapv_gldraw_folder(dnode);
 	}
 	ogl_error();
 
@@ -1196,13 +1744,7 @@ mapv_draw_recursive( GNode *dnode, int action )
 		else
 		{
 			/* Label non-subdirectory children */
-			node = dnode->children;
-			while (node != NULL)
-			{
-				if (!NODE_IS_DIR(node))
-					mapv_apply_label(node);
-				node = node->next;
-			}
+			mapv_process_children(dnode, MAPV_DRAW_LABELS, MAPV_DRAW_LABELS);
 		}
 	}
 
@@ -1211,17 +1753,21 @@ mapv_draw_recursive( GNode *dnode, int action )
 
 	if (!dir_collapsed) {
 		/* Recurse into subdirectories */
-		node = dnode->children;
-		while (node != NULL) {
-			if (!NODE_IS_DIR(node))
-				break;
-			mapv_draw_recursive( node, action );
-			node = node->next;
+		if (action == MAPV_DRAW_FOLDERS) {
+			GNode *node = dnode->children;
+			while (node != NULL && NODE_IS_DIR(node)) {
+				mapv_draw_recursive(node, MAPV_DRAW_FOLDERS);
+				node = node->next;
+			}
+		} else {
+			mapv_process_children(dnode, MAPV_DRAW_SUBTREES, action);
 		}
 	}
 
 	glm_mat4_copy(tmpmat, gl.modelview);
 	ogl_upload_matrices(FALSE);
+	mapv_batch_z_scale = saved_z_scale;
+	mapv_batch_z_offset = saved_z_offset;
 }
 
 
@@ -1334,8 +1880,38 @@ mapv_draw( boolean high_detail )
 	/* Draw low-detail geometry */
 
 	mapv_batch_begin( );
-	mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY );
-	mapv_batch_flush( );
+	if (mapv_cache_using) {
+		mapv_cached_instance_draw( );
+		/* Folder outlines are a separate line primitive; keep their normal
+		 * hierarchy traversal while reusing the cached box instances. */
+		mapv_draw_recursive(globals.fstree, MAPV_DRAW_FOLDERS);
+	} else {
+		mapv_draw_recursive( globals.fstree, MAPV_DRAW_GEOMETRY );
+		if (mapv_cache_building && mapv_instance_cnt > 0) {
+			if (mapv_cached_instance_vbo == 0)
+				glGenBuffers(1, &mapv_cached_instance_vbo);
+			mapv_cached_instance_count = (GLsizei)mapv_instance_cnt;
+			glBindBuffer(GL_ARRAY_BUFFER, mapv_cached_instance_vbo);
+			MapVInstance *cached_instances = NEW_ARRAY(MapVInstance, mapv_instance_cnt);
+			size_t i;
+			memcpy(cached_instances, mapv_instances,
+			       sizeof(MapVInstance) * mapv_instance_cnt);
+			for (i = 0; i < mapv_instance_cnt; i++)
+				cached_instances[i].shape[3] = fabs(cached_instances[i].shape[3]);
+			glBufferData(GL_ARRAY_BUFFER,
+				     sizeof(MapVInstance) * mapv_instance_cnt,
+				     cached_instances, GL_STATIC_DRAW);
+			xfree(cached_instances);
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+			mapv_cache_valid = TRUE;
+			mapv_cache_dirty = FALSE;
+			if (ogl_profile_enabled())
+				g_print("FSV MapV overview instance cache built (%u instances)\n",
+					(unsigned)mapv_cached_instance_count);
+		}
+		mapv_cache_building = FALSE;
+		mapv_batch_flush( );
+	}
 
 	if ((gl.render_mode == RENDERMODE_RENDER) && (fstree_low_draw_stage <= 1))
 		++fstree_low_draw_stage;
@@ -1946,7 +2522,7 @@ treev_arrange( boolean initial_arrange )
 	}
 #undef TREEV_ARRANGE_MAX_ITERATIONS
 
-	if (resized && camera_moving( )) {
+	if (resized && camera_moving( ) && !camera_treev_follow_active( )) {
 		/* Camera's destination has moved, so it will need a
 		 * flight path correction */
 		camera_pan_break( );
@@ -2038,6 +2614,7 @@ treev_init( void )
 
 	treev_init_recursive( globals.fstree );
 	treev_arrange( TRUE );
+	treev_cache_invalidate( );
 
 	/* Initial cursor state */
 	treev_get_corners( root_dnode, &treev_cursor_prev_c0, &treev_cursor_prev_c1 );
@@ -2072,9 +2649,6 @@ treev_queue_rearrange( GNode *dnode )
 	up_node = dnode;
 	while (up_node != NULL) {
 		NODE_DESC(up_node)->flags |= TREEV_NEED_REARRANGE;
-
-		// TODO: Invalidate uploaded VBO's
-
 		up_node = up_node->parent;
 	}
 
@@ -2082,11 +2656,11 @@ treev_queue_rearrange( GNode *dnode )
 }
 
 
-/* Batching for TreeV leaf geometry -- RENDERMODE_RENDER only, mirroring
- * mapv_batch_* above (see its comment for the full rationale: per-node
- * draw calls made frame time scale badly with visible node count).
- * RENDERMODE_SELECT (picking) keeps using treev_gldraw_leaf( )'s
- * original one-draw-call-per-node path, unchanged.
+/* Batching for TreeV leaf geometry, mirroring mapv_batch_* above (see its
+ * comment for the full rationale: per-node draw calls made frame time
+ * scale badly with visible node count). SELECT batches encode each leaf's
+ * node ID into its vertex color, retaining accurate picking while reducing
+ * per-leaf draw calls.
  *
  * A full leaf (top face + 4 side faces) is 20 vertices/30 indices --
  * the same count as a MapV node, purely by coincidence of geometry --
@@ -2107,6 +2681,87 @@ static GLuint treev_batch_vbo, treev_batch_ebo;
  * bakes out per-node relative to this same shared root frame. */
 static mat4 treev_batch_root_modelview;
 static mat4 treev_batch_root_modelview_inv;
+static mat4 treev_batch_cached_modelview;
+static mat4 treev_batch_cached_local_transform;
+static mat3 treev_batch_cached_normal_transform;
+static boolean treev_batch_transform_cache_valid;
+
+typedef struct {
+	GLuint vbo, ebo;
+	GLsizei index_count;
+} TreeVBatchChunk;
+typedef struct {
+	double r0;
+	double arc_width;
+	double platform_depth;
+	int child_count;
+	GNode *first_child;
+} TreeVLayoutCacheEntry;
+static GArray *treev_cached_chunks;
+static size_t treev_cached_chunk_count;
+static boolean treev_cache_valid;
+static boolean treev_cache_dirty = TRUE;
+static boolean treev_cache_using;
+static double treev_cache_dirty_since;
+/* In the stable overview, the leaf mesh is already in a VBO, but the normal
+ * recursive path still walks every row and recomputes every leaf's polar
+ * position on each frame. Keep the row-layout result alongside the geometry
+ * cache so overview frames can skip that O(number of leaves) CPU work too. */
+static GHashTable *treev_layout_cache;
+
+static void
+treev_cache_invalidate(void)
+{
+	treev_cache_valid = FALSE;
+	treev_cache_dirty = TRUE;
+	treev_cache_dirty_since = xgettime();
+	if (treev_layout_cache != NULL)
+		g_hash_table_remove_all(treev_layout_cache);
+}
+
+static TreeVLayoutCacheEntry *
+treev_layout_cache_lookup(GNode *dnode, double r0)
+{
+	TreeVLayoutCacheEntry *entry;
+	if (treev_layout_cache == NULL)
+		return NULL;
+	entry = g_hash_table_lookup(treev_layout_cache, dnode);
+	if (entry == NULL || entry->r0 != r0 ||
+	    entry->arc_width != TREEV_GEOM_PARAMS(dnode)->platform.arc_width ||
+	    entry->child_count != DIR_NODE_DESC(dnode)->child_count ||
+	    entry->first_child != dnode->children)
+		return NULL;
+	return entry;
+}
+
+static void
+treev_layout_cache_store(GNode *dnode, double r0)
+{
+	TreeVLayoutCacheEntry *entry;
+	if (treev_layout_cache == NULL)
+		treev_layout_cache = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+	entry = g_new(TreeVLayoutCacheEntry, 1);
+	entry->r0 = r0;
+	entry->arc_width = TREEV_GEOM_PARAMS(dnode)->platform.arc_width;
+	entry->platform_depth = TREEV_GEOM_PARAMS(dnode)->platform.depth;
+	entry->child_count = DIR_NODE_DESC(dnode)->child_count;
+	entry->first_child = dnode->children;
+	g_hash_table_replace(treev_layout_cache, dnode, entry);
+}
+
+/* The all-leaf cache is used only for overview framing, where per-leaf
+ * screen culling rejects little or nothing. Close views keep the existing
+ * culling path so off-screen geometry does not burden the GPU. */
+static boolean
+treev_cache_overview(void)
+{
+	double extent;
+	if (camera == NULL || root_dnode == NULL)
+		return FALSE;
+	extent = treev_core_radius + TREEV_GEOM_PARAMS(root_dnode)->platform.subtree_max_depth;
+	return extent > 0.0 &&
+		camera->distance * tan(RAD(0.5 * camera->fov)) >= 0.8 * extent;
+}
 
 /* Call once per frame, before any treev_gldraw_leaf( ) calls, to reset
  * the batch (allocating its backing storage on first use) */
@@ -2119,33 +2774,26 @@ treev_batch_begin( void )
 	}
 	treev_batch_vert_cnt = 0;
 	treev_batch_idx_cnt = 0;
+	treev_batch_transform_cache_valid = FALSE;
+	treev_cache_using = treev_cache_valid && !treev_cache_dirty && treev_cache_overview();
+	treev_cache_building = !treev_cache_using && treev_cache_dirty &&
+		treev_cache_overview() && (xgettime() - treev_cache_dirty_since) >= 0.25;
+	if (treev_cache_building) {
+		if (treev_cached_chunks == NULL)
+			treev_cached_chunks = g_array_new(FALSE, TRUE, sizeof(TreeVBatchChunk));
+		treev_cached_chunk_count = 0;
+	}
 	glm_mat4_copy(gl.modelview, treev_batch_root_modelview);
 	glm_mat4_inv(treev_batch_root_modelview, treev_batch_root_modelview_inv);
 }
 
-/* Uploads and draws everything accumulated in the batch so far (in one
- * draw call), then resets it. Called whenever the batch is full, and
- * once more at the end of the frame to flush whatever's left over.
- * Identical in structure to mapv_batch_flush( ) -- see its comment for
- * why the root mvp/modelview/normal_matrix are uploaded explicitly
- * here rather than trusting whatever's currently bound. */
 static void
-treev_batch_flush( void )
+treev_batch_draw_buffers(GLuint vbo, GLuint ebo, GLsizei index_count)
 {
-	if (treev_batch_vert_cnt == 0)
-		return;
-
-	if (!treev_batch_vbo) {
-		glGenBuffers(1, &treev_batch_vbo);
-		glGenBuffers(1, &treev_batch_ebo);
-	}
-
-	glBindBuffer(GL_ARRAY_BUFFER, treev_batch_vbo);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt, treev_batch_verts, GL_STREAM_DRAW);
-
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, treev_batch_ebo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * treev_batch_idx_cnt, treev_batch_idx, GL_STREAM_DRAW);
-
+	mat4 root_mvp;
+	mat3 root_normal_matrix;
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
 	glEnableVertexAttribArray(gl.position_location);
 	glVertexAttribPointer(gl.position_location, 3, GL_FLOAT, GL_FALSE,
 			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, position));
@@ -2155,40 +2803,97 @@ treev_batch_flush( void )
 	glEnableVertexAttribArray(gl.vcolor_location);
 	glVertexAttribPointer(gl.vcolor_location, 3, GL_FLOAT, GL_FALSE,
 			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, color));
+	glEnableVertexAttribArray(gl.node_id_location);
+	glVertexAttribPointer(gl.node_id_location, 1, GL_FLOAT, GL_FALSE,
+			      sizeof(ColorVertex), (void *)offsetof(ColorVertex, node_id));
 
-	mat4 root_mvp;
-	mat3 root_normal_matrix;
 	glm_mat4_mul(gl.projection, treev_batch_root_modelview, root_mvp);
 	glm_mat4_pick3(treev_batch_root_modelview, root_normal_matrix);
 	glm_mat3_inv(root_normal_matrix, root_normal_matrix);
 	glm_mat3_transpose(root_normal_matrix);
-
 	glUseProgram(gl.program);
 	glUniformMatrix4fv(gl.modelview_location, 1, GL_FALSE, (float *)treev_batch_root_modelview);
 	glUniformMatrix3fv(gl.normal_matrix_location, 1, GL_FALSE, (float *)root_normal_matrix);
 	glUniformMatrix4fv(gl.mvp_location, 1, GL_FALSE, (float *)root_mvp);
-	glUniform1i(gl.lightning_enabled_location, 1);
+	glUniform1i(gl.lightning_enabled_location, gl.render_mode == RENDERMODE_RENDER);
 	glUniform1i(gl.use_vertex_color_location, 1);
-
-	glDrawElements(GL_TRIANGLES, treev_batch_idx_cnt, GL_UNSIGNED_SHORT, 0);
-
+	glUniform1i(gl.use_node_id_location, 1);
+	glUniform1i(gl.selection_mode_location, gl.render_mode == RENDERMODE_SELECT);
+	glUniform1f(gl.highlighted_node_id_location, (GLfloat)highlight_node_id);
+	glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_SHORT, 0);
 	glUniform1i(gl.use_vertex_color_location, 0);
+	glUniform1i(gl.use_node_id_location, 0);
+	glUniform1i(gl.selection_mode_location, 0);
 	glUseProgram(0);
-
-	/* Restore modelview/mvp/normal_matrix to reflect gl.modelview as the
-	 * traversal in progress currently has it -- see mapv_batch_flush( ). */
 	ogl_upload_matrices(FALSE);
-
-	glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt, NULL, GL_STREAM_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+}
 
+static void
+treev_batch_flush( void )
+{
+	GLuint vbo, ebo;
+	if (treev_batch_vert_cnt == 0)
+		return;
+	if (treev_cache_building) {
+		TreeVBatchChunk chunk;
+		if (treev_cached_chunk_count == treev_cached_chunks->len) {
+			memset(&chunk, 0, sizeof(chunk));
+			g_array_append_val(treev_cached_chunks, chunk);
+		}
+		chunk = g_array_index(treev_cached_chunks, TreeVBatchChunk, treev_cached_chunk_count);
+		if (!chunk.vbo) {
+			glGenBuffers(1, &chunk.vbo);
+			glGenBuffers(1, &chunk.ebo);
+		}
+		chunk.index_count = (GLsizei)treev_batch_idx_cnt;
+		g_array_index(treev_cached_chunks, TreeVBatchChunk, treev_cached_chunk_count) = chunk;
+		vbo = chunk.vbo;
+		ebo = chunk.ebo;
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt,
+			     treev_batch_verts, GL_STATIC_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * treev_batch_idx_cnt,
+			     treev_batch_idx, GL_STATIC_DRAW);
+		treev_cached_chunk_count++;
+	} else {
+		if (!treev_batch_vbo) {
+			glGenBuffers(1, &treev_batch_vbo);
+			glGenBuffers(1, &treev_batch_ebo);
+		}
+		vbo = treev_batch_vbo;
+		ebo = treev_batch_ebo;
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt,
+			     treev_batch_verts, GL_STREAM_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * treev_batch_idx_cnt,
+			     treev_batch_idx, GL_STREAM_DRAW);
+	}
+	treev_batch_draw_buffers(vbo, ebo, (GLsizei)treev_batch_idx_cnt);
+	if (!treev_cache_building) {
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(ColorVertex) * treev_batch_vert_cnt,
+			     NULL, GL_STREAM_DRAW);
+	}
 	treev_batch_vert_cnt = 0;
 	treev_batch_idx_cnt = 0;
 }
 
+static void
+treev_cached_draw_all(void)
+{
+	size_t i;
+	for (i = 0; i < treev_cached_chunk_count; i++) {
+		TreeVBatchChunk *chunk = &g_array_index(treev_cached_chunks, TreeVBatchChunk, i);
+		treev_batch_draw_buffers(chunk->vbo, chunk->ebo, chunk->index_count);
+	}
+}
+
 /* Appends a leaf's top face (always) and side faces (only if full_node)
- * to the batch, with its lit/highlighted color baked into each vertex,
+ * to the batch, with base color and node ID stored per vertex,
  * flushing first if there isn't room left. corners[] are already in
  * the leaf's own micro-rotated local frame (see treev_gldraw_leaf( )'s
  * own corner rotation by leaf.theta) -- what's left to bake in here is
@@ -2207,28 +2912,33 @@ treev_batch_add_leaf( GNode *node, XYvec *corners, double z0, double z1,
 	if ((treev_batch_vert_cnt + 20) > (size_t)(TREEV_BATCH_MAX_NODES * 20))
 		treev_batch_flush( );
 
-	/* Same color logic as node_set_color( )'s RENDERMODE_RENDER branch */
 	memcpy(color, NODE_DESC(node)->color, 3 * sizeof(GLfloat));
-	if (NODE_DESC(node)->id == highlight_node_id) {
-		for (i = 0; i < 3; i++)
-			color[i] *= 1.3f;
-	}
 
-	mat4 local_accum;
-	mat3 normal_matrix_local;
-	glm_mat4_mul(treev_batch_root_modelview_inv, gl.modelview, local_accum);
-	glm_mat4_pick3(local_accum, normal_matrix_local);
-	glm_mat3_inv(normal_matrix_local, normal_matrix_local);
-	glm_mat3_transpose(normal_matrix_local);
+	/* Every leaf sibling in one directory shares the same modelview. Cache
+	 * its root-relative transform and normal matrix instead of multiplying
+	 * and inverting them for every file in that directory. */
+	if (!treev_batch_transform_cache_valid ||
+	    memcmp(treev_batch_cached_modelview, gl.modelview,
+		   sizeof(treev_batch_cached_modelview)) != 0) {
+		glm_mat4_copy(gl.modelview, treev_batch_cached_modelview);
+		glm_mat4_mul(treev_batch_root_modelview_inv, gl.modelview,
+			     treev_batch_cached_local_transform);
+		glm_mat4_pick3(treev_batch_cached_local_transform,
+			       treev_batch_cached_normal_transform);
+		glm_mat3_inv(treev_batch_cached_normal_transform,
+			     treev_batch_cached_normal_transform);
+		glm_mat3_transpose(treev_batch_cached_normal_transform);
+		treev_batch_transform_cache_valid = TRUE;
+	}
 
 #define CV(px, py, pz, nx, ny, nz) do { \
 	vec4 _p = { (float)(px), (float)(py), (float)(pz), 1.0f }; \
 	vec4 _tp; \
 	vec3 _n = { (float)(nx), (float)(ny), (float)(nz) }; \
 	vec3 _tn; \
-	glm_mat4_mulv(local_accum, _p, _tp); \
-	glm_mat3_mulv(normal_matrix_local, _n, _tn); \
-	treev_batch_verts[treev_batch_vert_cnt++] = (ColorVertex){{_tp[0], _tp[1], _tp[2]}, {_tn[0], _tn[1], _tn[2]}, {color[0], color[1], color[2]}}; \
+	glm_mat4_mulv(treev_batch_cached_local_transform, _p, _tp); \
+	glm_mat3_mulv(treev_batch_cached_normal_transform, _n, _tn); \
+	 treev_batch_verts[treev_batch_vert_cnt++] = (ColorVertex){{_tp[0], _tp[1], _tp[2]}, {_tn[0], _tn[1], _tn[2]}, {color[0], color[1], color[2]}, (GLfloat)NODE_DESC(node)->id}; \
 } while (0)
 
 	base = treev_batch_vert_cnt;
@@ -2296,6 +3006,8 @@ treev_gldraw_platform( GNode *dnode, double r0 )
 	int s, seg_count;
 
 	g_assert( NODE_IS_DIR(dnode) );
+	if (gl.render_mode == RENDERMODE_SELECT && !treev_cache_building)
+		treev_batch_flush( );
 
 	r1 = r0 + TREEV_GEOM_PARAMS(dnode)->platform.depth;
 	seg_count = (int)ceil( TREEV_GEOM_PARAMS(dnode)->platform.arc_width / TREEV_CURVE_GRANULARITY );
@@ -2506,6 +3218,8 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 	double edge, height;
 	double sin_theta, cos_theta;
 	int i;
+	if (treev_cache_using && full_node)
+		return;
 
 	if (full_node) {
 		edge = TREEV_LEAF_NODE_EDGE;
@@ -2552,32 +3266,23 @@ treev_gldraw_leaf( GNode *node, double r0, boolean full_node )
 		corners[i].y = p.x * sin_theta + p.y * cos_theta;
 	}
 
-	/* Draw top face (and, if a full node, side faces): batched in
-	 * RENDER mode (see treev_batch_add_leaf( )); drawn immediately, one
-	 * node at a time, in SELECT mode (picking), same as MapV. */
-	if (gl.render_mode == RENDERMODE_RENDER)
+	/* Batch both visible rendering and selection. In SELECT mode each
+	 * vertex carries this node's encoded ID color. */
+	if (gl.render_mode == RENDERMODE_RENDER || gl.render_mode == RENDERMODE_SELECT)
 		treev_batch_add_leaf( node, corners, z0, z1, sin_theta, cos_theta, full_node );
-	else {
-		// Note order of vertices for triangle stripping.
-		Vertex vert[] = {
-			{{corners[0].x, corners[0].y, z1}, {0, 0, 1}},
-			{{corners[1].x, corners[1].y, z1}, {0, 0, 1}},
-			{{corners[3].x, corners[3].y, z1}, {0, 0, 1}},
-			{{corners[2].x, corners[2].y, z1}, {0, 0, 1}},
-		};
-		drawVertex(GL_TRIANGLE_STRIP, vert, 4, NULL, node);
-	}
 
 	if (!full_node) {
 		/* Draw an "X" and we're done */
 		VertexPos vertx[4];
 		for (i = 0; i < 4; i++)
 			vertx[i] = (VertexPos){{corners[x_verts[i]].x, corners[x_verts[i]].y, z1}};
+		if (gl.render_mode == RENDERMODE_SELECT)
+			treev_batch_flush( );
 		drawVertexPos(GL_LINES, vertx, 4, &color_black);
 		return;
 	}
 
-	if (gl.render_mode == RENDERMODE_RENDER)
+	if (gl.render_mode == RENDERMODE_RENDER || gl.render_mode == RENDERMODE_SELECT)
 		return; /* side faces already appended by treev_batch_add_leaf( ) above */
 
 	/* Draw side faces */
@@ -2898,6 +3603,7 @@ treev_build_dir( GNode *dnode, double r0 )
 #define edge05 (0.5 * TREEV_LEAF_NODE_EDGE)
 #define edge15 (1.5 * TREEV_LEAF_NODE_EDGE)
 	GNode *node;
+	TreeVLayoutCacheEntry *cached_layout;
 	RTvec pos;
 	double arc_len, inter_arc_width;
 	int n, row_node_count, remaining_node_count;
@@ -2927,39 +3633,50 @@ treev_build_dir( GNode *dnode, double r0 )
 
 	/* Build rows of leaf nodes, going from the inner edge outward
 	 * (this will require laying down nodes in reverse order) */
-	remaining_node_count = DIR_NODE_DESC(dnode)->child_count;
-	pos.r = r0 + TREEV_LEAF_NODE_EDGE;
-	node = (GNode *)g_list_last( (GList *)dnode->children );
-	while (node != NULL) {
-		/* Calculate (available) arc length of row */
-		arc_len = (PI / 180.0) * pos.r * TREEV_GEOM_PARAMS(dnode)->platform.arc_width - TREEV_PLATFORM_SPACING_WIDTH;
-		/* Number of nodes this row can accomodate */
-		row_node_count = (int)floor( (arc_len - edge05) / edge15 );
-		/* Arc width between adjacent leaf nodes */
-		inter_arc_width = (180.0 * edge15 / PI) / pos.r;
+	cached_layout = treev_cache_using ? treev_layout_cache_lookup(dnode, r0) : NULL;
+	if (cached_layout != NULL) {
+		/* All leaf vertices are in the overview VBO. Their polar positions
+		 * and this platform's exact row depth are unchanged, so avoid walking
+		 * every child just to rewrite the same values on each frame. */
+		TREEV_GEOM_PARAMS(dnode)->platform.depth = cached_layout->platform_depth;
+	} else {
+		remaining_node_count = DIR_NODE_DESC(dnode)->child_count;
+		pos.r = r0 + TREEV_LEAF_NODE_EDGE;
+		node = (GNode *)g_list_last( (GList *)dnode->children );
+		while (node != NULL) {
+			/* Calculate (available) arc length of row */
+			arc_len = (PI / 180.0) * pos.r * TREEV_GEOM_PARAMS(dnode)->platform.arc_width - TREEV_PLATFORM_SPACING_WIDTH;
+			/* Number of nodes this row can accomodate */
+			row_node_count = (int)floor( (arc_len - edge05) / edge15 );
+			/* Arc width between adjacent leaf nodes */
+			inter_arc_width = (180.0 * edge15 / PI) / pos.r;
 
-		/* Lay out nodes in this row, sweeping clockwise */
-		pos.theta = 0.5 * inter_arc_width * (double)(MIN(row_node_count, remaining_node_count) - 1);
-		for (n = 0; (n < row_node_count) && (node != NULL); n++) {
-			TREEV_GEOM_PARAMS(node)->leaf.theta = pos.theta;
-			TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
-			/* The two assignments above are LAYOUT and must always run:
-			 * labels, picking and the camera all read leaf.theta /
-			 * leaf.distance. Only the draw call below is skippable. */
-			if ((gl.render_mode != RENDERMODE_RENDER) ||
-			    !treev_leaf_offscreen(r0, pos.r - r0, pos.theta))
-				treev_gldraw_leaf( node, r0, !NODE_IS_DIR(node) );
-			pos.theta -= inter_arc_width;
-			node = node->prev;
+			/* Lay out nodes in this row, sweeping clockwise */
+			pos.theta = 0.5 * inter_arc_width * (double)(MIN(row_node_count, remaining_node_count) - 1);
+			for (n = 0; (n < row_node_count) && (node != NULL); n++) {
+				TREEV_GEOM_PARAMS(node)->leaf.theta = pos.theta;
+				TREEV_GEOM_PARAMS(node)->leaf.distance = pos.r - r0;
+				/* The two assignments above are LAYOUT and must always run:
+				 * labels, picking and the camera all read leaf.theta /
+				 * leaf.distance. Only the draw call below is skippable. */
+				if (treev_cache_building || treev_cache_using ||
+				    (gl.render_mode != RENDERMODE_RENDER) ||
+				    !treev_leaf_offscreen(r0, pos.r - r0, pos.theta))
+					treev_gldraw_leaf( node, r0, !NODE_IS_DIR(node) );
+				pos.theta -= inter_arc_width;
+				node = node->prev;
+			}
+
+			remaining_node_count -= row_node_count;
+			pos.r += edge15;
 		}
 
-		remaining_node_count -= row_node_count;
-		pos.r += edge15;
+		/* Official directory depth */
+		pos.r -= edge05;
+		TREEV_GEOM_PARAMS(dnode)->platform.depth = pos.r - r0;
+		if (treev_cache_building)
+			treev_layout_cache_store(dnode, r0);
 	}
-
-	/* Official directory depth */
-	pos.r -= edge05;
-	TREEV_GEOM_PARAMS(dnode)->platform.depth = pos.r - r0;
 
 	/* Draw underlying directory */
 	treev_gldraw_platform( dnode, r0 );
@@ -3002,12 +3719,13 @@ treev_build_dir( GNode *dnode, double r0 )
  *  - TreeV label + leaf LOD ON: pure win, invisible at normal zoom.
  *  - TreeV motion label hiding OFF: the user specifically wants TreeV labels
  *    readable while rotating/tilting; the size LOD covers most of the cost.
- *  - MapV motion label hiding ON: measured as a large win there, and MapV
- *    labels are dense enough that losing them mid-motion is not missed. */
+ *  - MapV motion label hiding OFF: keep the default view visually stable;
+ *    users can enable the performance trade-off from the Help menu. */
 static boolean treev_cull_flag = TRUE;
 static boolean treev_lod_flag = TRUE;
 static boolean treev_hide_labels_moving_flag = FALSE;
-static boolean mapv_hide_labels_moving_flag = TRUE;
+static boolean mapv_hide_labels_moving_flag = FALSE;
+static boolean mapv_lod_flag = TRUE;
 static boolean perf_flags_initialized = FALSE;
 
 static void
@@ -3023,8 +3741,12 @@ perf_flags_init( void )
 		treev_lod_flag = FALSE;
 	if (g_getenv("FSV_TREEV_HIDE_LABELS_MOVING") != NULL)
 		treev_hide_labels_moving_flag = TRUE;
+	if (g_getenv("FSV_MAPV_HIDE_LABELS_MOVING") != NULL)
+		mapv_hide_labels_moving_flag = TRUE;
 	if (g_getenv("FSV_MAPV_NO_HIDE_LABELS_MOVING") != NULL)
 		mapv_hide_labels_moving_flag = FALSE;
+	if (g_getenv("FSV_MAPV_NO_LABEL_LOD") != NULL)
+		mapv_lod_flag = FALSE;
 }
 
 boolean
@@ -3084,6 +3806,21 @@ geometry_set_mapv_hide_labels_moving( boolean enabled )
 {
 	perf_flags_init( );
 	mapv_hide_labels_moving_flag = enabled;
+	redraw( );
+}
+
+boolean
+geometry_mapv_lod_enabled( void )
+{
+	perf_flags_init( );
+	return mapv_lod_flag;
+}
+
+void
+geometry_set_mapv_lod( boolean enabled )
+{
+	perf_flags_init( );
+	mapv_lod_flag = enabled;
 	redraw( );
 }
 
@@ -3215,7 +3952,8 @@ treev_draw_recursive( GNode *dnode, double prev_r0, double r0, int action )
 	dir_collapsed = DIR_COLLAPSED(dnode);
         dir_expanded = DIR_EXPANDED(dnode);
 
-	if (!NODE_IS_METANODE(dnode) && !dir_collapsed) {
+	if (!treev_cache_building && !treev_cache_using &&
+	    !NODE_IS_METANODE(dnode) && !dir_collapsed) {
 		/* Non-destructive diagnostic for the TreeV culling work (see
 		 * backlog) -- enable with FSV_DEBUG_CULL=1. Computes whether this
 		 * node's WHOLE visible subtree -- a polar wedge bounded radially
@@ -3670,7 +4408,19 @@ treev_draw( boolean high_detail )
 
 	treev_batch_begin( );
 	treev_draw_recursive( globals.fstree, NIL, treev_core_radius, TREEV_DRAW_GEOMETRY_WITH_BRANCHES );
-	treev_batch_flush( );
+	if (treev_cache_building) {
+		treev_batch_flush( );
+		treev_cache_valid = TRUE;
+		treev_cache_dirty = FALSE;
+		treev_cache_building = FALSE;
+		if (ogl_profile_enabled())
+			g_print("FSV TreeV overview geometry cache built (%zu batches)\n",
+				treev_cached_chunk_count);
+	} else if (treev_cache_using) {
+		treev_cached_draw_all( );
+	} else {
+		treev_batch_flush( );
+	}
 
 	/* Only a genuine on-screen render advances the draw-stage bookkeeping.
 	 * treev_draw( ) is also invoked from ogl_select_modern( ) (node-picking,
@@ -3751,15 +4501,17 @@ cursor_post( void )
 }
 
 
-/* Zeroes the drawing stages for both low- and high-detail geometry, so
- * that a full recursive draw is performed in the next frame without
- * the use of display lists (i.e. caches). This is necessary whenever
- * any geometry needs to be (re)built */
+/* Zeroes drawing stages and invalidates TreeV's overview leaf cache when
+ * geometry changes. */
 static void
 queue_uncached_draw( void )
 {
 	fstree_low_draw_stage = 0;
 	fstree_high_draw_stage = 0;
+	if (globals.fsv_mode == FSV_TREEV)
+		treev_cache_invalidate( );
+	else if (globals.fsv_mode == FSV_MAPV)
+		mapv_cache_invalidate( );
 }
 
 
@@ -3775,6 +4527,7 @@ geometry_queue_rebuild( GNode *dnode )
 void
 geometry_init( FsvMode mode )
 {
+	camera_treev_follow_begin(NULL);
 	DIR_NODE_DESC(globals.fstree)->deployment = 1.0;
 	geometry_queue_rebuild( globals.fstree );
 
@@ -4131,6 +4884,8 @@ geometry_colexp_initiated( GNode *dnode )
 	 * or its inner radius may have changed) */
 	if (DIR_COLLAPSED(dnode) && (globals.fsv_mode == FSV_TREEV))
 		treev_reshape_platform( dnode, geometry_treev_platform_r0( dnode ) );
+	if (globals.fsv_mode == FSV_TREEV)
+		treev_queue_rearrange( dnode );
 }
 
 
@@ -4152,6 +4907,30 @@ geometry_colexp_in_progress( GNode *dnode )
 		/* Take care of shifting angles */
 		treev_queue_rearrange( dnode );
 	}
+}
+
+
+/* Re-arrange immediately using the current interpolated deployment values
+ * before colexp( ) computes a camera target. This is the current animation
+ * position, not the eventual endpoint; geometry_treev_follow_update( ) keeps
+ * the camera attached as later frames change the deployment values. */
+void
+geometry_treev_force_rearrange( void )
+{
+	if (globals.fsv_mode == FSV_TREEV)
+		treev_arrange( FALSE );
+}
+
+
+/* Apply each animation step to the TreeV layout before rendering, then
+ * move the automatic camera target by the focused node's actual delta. */
+void
+geometry_treev_follow_update( void )
+{
+	if (globals.fsv_mode != FSV_TREEV || !camera_treev_follow_active())
+		return;
+	treev_arrange(FALSE);
+	camera_treev_follow_layout();
 }
 
 
@@ -4217,14 +4996,13 @@ draw_node( GNode *node )
 void
 geometry_highlight_node( GNode *node, boolean strong )
 {
-	if (!node)
-		highlight_node_id = 0;
-	else {
-		highlight_node_id = NODE_DESC(node)->id;
-		//g_print("Highlighting node %u %s\n", highlight_node_id, NODE_DESC(node)->name);
-		//draw_node(node);
-		redraw();
-	}
+	GLuint new_highlight_id = node ? NODE_DESC(node)->id : 0;
+	(void)strong;
+	if (new_highlight_id == highlight_node_id)
+		return;
+
+	highlight_node_id = new_highlight_id;
+	redraw();
 }
 
 
@@ -4237,6 +5015,10 @@ geometry_free_recursive( GNode *dnode )
 	GNode *node;
 
 	g_assert( NODE_IS_DIR(dnode) || NODE_IS_METANODE(dnode) );
+	if (mapv_draw_rows)
+		g_hash_table_remove(mapv_draw_rows, dnode);
+	if (mapv_draw_peak_heights)
+		g_hash_table_remove(mapv_draw_peak_heights, dnode);
 
 	//dir_ndesc = DIR_NODE_DESC(dnode);
 

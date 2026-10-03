@@ -55,7 +55,7 @@
 
 /* Font used to render glyphs. Any installed monospace font works; bold
  * is used to stay visually close to the old bitmap font's weight */
-#define GLYPH_FONT_DESC "Monospace Bold 36"
+#define GLYPH_FONT_DESC "Monospace Bold 24"
 
 /* Fallback glyph shown for anything that fails to decode */
 #define FALLBACK_CODEPOINT ((gunichar)'?')
@@ -321,7 +321,8 @@ glyph_cache_lookup( gunichar cp, XYvec *t_c0, XYvec *t_c1 )
 
 			glBindTexture( GL_TEXTURE_2D, text_tobj );
 			glyph_render_to_atlas( cp, px, py );
-			glGenerateMipmap( GL_TEXTURE_2D );
+			/* Linear filtering needs no mipmaps. Rebuilding the full
+			 * atlas chain per glyph can stall an otherwise smooth frame. */
 
 			uv = g_new(GlyphUV, 1);
 			uv->u0 = (float)px / (float)ATLAS_SIZE;
@@ -353,7 +354,7 @@ text_init( void )
 	/* Set up texture-mapping parameters */
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 	glTexParameterfv( GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border_color );
@@ -452,26 +453,24 @@ get_char_dims( int len, const XYvec *max_dims, XYvec *cdims )
 static size_t
 utf8_decode_codepoints( const char *text, gunichar *codepoints, size_t max_codepoints )
 {
-	const unsigned char *p = (const unsigned char *)text;
+	const char *p = text;
+	const char *end = text + strlen(text);
 	size_t n = 0;
 
-	while (*p && n < max_codepoints) {
+	while (p < end && n < max_codepoints) {
 		gunichar cp;
-		int char_len;
+		gunichar next = g_utf8_get_char_validated(p, end - p);
 
-		if (!g_utf8_validate( (const char *)p, -1, NULL )) {
-			/* Whole remaining tail is invalid; bail one byte
-			 * at a time so we still make progress */
+		if (next == (gunichar)-1 || next == (gunichar)-2) {
+			/* Replace only the malformed byte and keep valid neighbors. */
 			codepoints[n++] = FALLBACK_CODEPOINT;
 			p++;
 			continue;
 		}
 
-		cp = g_utf8_get_char( (const char *)p );
-		char_len = g_utf8_next_char( (const char *)p ) - (const char *)p;
-
+		cp = next;
 		codepoints[n++] = cp;
-		p += char_len;
+		p = g_utf8_next_char(p);
 	}
 
 	return n;
@@ -501,7 +500,12 @@ draw_text_vertices(TextVertex *tv, size_t nchars)
 	glVertexAttribPointer(glt.texcoord_location, 2, GL_FLOAT, GL_FALSE,
 			      sizeof(TextVertex), (void *)offsetof(TextVertex, texCoord));
 
-	GLushort *idx = NEW_ARRAY(GLushort, idx_len);
+	static GLushort *idx;
+	static size_t idx_capacity;
+	if ((size_t)idx_len > idx_capacity) {
+		idx_capacity = idx_len;
+		RESIZE(idx, idx_capacity, GLushort);
+	}
 	for (size_t i = 0; i < nchars; i++) {
 		size_t j = 6 * i;  // 6 indices per char
 		GLushort v = 4 * i;  // 4 Vertices per char
@@ -529,7 +533,6 @@ draw_text_vertices(TextVertex *tv, size_t nchars)
 	glUseProgram(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	xfree(idx);
 }
 
 /* Draws a straight line of text centered at the given position,

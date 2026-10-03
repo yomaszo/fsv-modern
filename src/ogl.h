@@ -41,7 +41,17 @@ typedef struct FsvGlState {
 	GLint color_location;
 	GLint lightning_enabled_location;
 	GLint vcolor_location;
+	GLint node_id_location;
 	GLint use_vertex_color_location;
+	GLint use_node_id_location;
+	GLint selection_mode_location;
+	GLint highlighted_node_id_location;
+	GLint instance_bounds_location;
+	GLint instance_shape_location;
+	GLint instance_transform_color_location;
+	GLint instance_node_id_location;
+	GLint instanced_geometry_location;
+	GLint instanced_lod_dynamic_location;
 
 	// Phong lightning parameters
 	GLint ambient_location;
@@ -109,6 +119,8 @@ void ogl_draw( void );
 void _ogl_error(const char *filename, int line_num);
 GLuint ogl_select_modern(GLint x, GLint y);
 void ogl_set_fps_display( boolean enabled );
+boolean ogl_profile_enabled( void );
+void ogl_set_profile_enabled( boolean enabled );
 boolean ogl_aabb_outside_frustum( mat4 mvp, vec3 bbmin, vec3 bbmax );
 #ifdef __GTK_H__
 GtkWidget *ogl_widget_new( void );

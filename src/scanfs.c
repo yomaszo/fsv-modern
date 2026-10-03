@@ -299,6 +299,11 @@ scanfs( const char *dir )
 	char *name;
 
 	if (globals.fstree != NULL) {
+		/* Scanning can pump GTK events. Detach all viewport references before
+		 * freeing the old tree so a hover/click cannot resolve stale nodes. */
+		viewport_pass_node_table(NULL, 0);
+		geometry_highlight_node(NULL, FALSE);
+
 		/* Free existing geometry and filesystem tree */
 		geometry_free_recursive( globals.fstree );
 		g_node_traverse(globals.fstree, G_IN_ORDER, G_TRAVERSE_ALL,

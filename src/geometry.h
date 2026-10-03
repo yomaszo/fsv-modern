@@ -89,6 +89,8 @@ void geometry_draw( boolean high_detail );
 void geometry_camera_pan_finished( void );
 void geometry_colexp_initiated( GNode *dnode );
 void geometry_colexp_in_progress( GNode *dnode );
+void geometry_treev_force_rearrange( void );
+void geometry_treev_follow_update( void );
 boolean geometry_should_highlight(GNode *node);
 void geometry_highlight_node( GNode *node, boolean strong );
 void geometry_free_recursive( GNode *dnode );
@@ -103,6 +105,8 @@ boolean geometry_treev_hide_labels_moving( void );
 void geometry_set_treev_hide_labels_moving( boolean enabled );
 boolean geometry_mapv_hide_labels_moving( void );
 void geometry_set_mapv_hide_labels_moving( boolean enabled );
+boolean geometry_mapv_lod_enabled( void );
+void geometry_set_mapv_lod( boolean enabled );
 
 
 /* end geometry.h */

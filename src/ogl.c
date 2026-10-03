@@ -34,6 +34,141 @@ static guint fps_redraw_timer_id = 0;
 static int fps_frame_count = 0;
 static double fps_last_update_time = 0.0;
 
+/* Opt-in, non-blocking render profiling. Enable with FSV_PROFILE=1. GPU
+ * elapsed-time queries are read only after the driver reports completion. */
+typedef struct {
+	GLuint query;
+	boolean pending;
+	boolean pick;
+} ProfileQuery;
+#define PROFILE_QUERY_COUNT 8
+static ProfileQuery profile_queries[PROFILE_QUERY_COUNT];
+static unsigned int profile_query_next;
+static boolean profile_enabled;
+static boolean profile_initialized;
+static boolean profile_gpu_available;
+static double profile_report_at;
+static double profile_render_cpu_sum, profile_render_cpu_max;
+static unsigned int profile_render_cpu_count;
+static double profile_pick_cpu_sum, profile_pick_cpu_max;
+static unsigned int profile_pick_cpu_count;
+static double profile_read_cpu_sum, profile_read_cpu_max;
+static unsigned int profile_read_cpu_count;
+static double profile_gpu_render_sum, profile_gpu_render_max;
+static unsigned int profile_gpu_render_count;
+static double profile_gpu_pick_sum, profile_gpu_pick_max;
+static unsigned int profile_gpu_pick_count;
+
+static void
+profile_init(void)
+{
+	const char *env = g_getenv("FSV_PROFILE");
+	if (!profile_initialized) {
+		profile_enabled = env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
+		profile_initialized = TRUE;
+	}
+	profile_gpu_available = profile_enabled &&
+		(epoxy_gl_version() >= 33 || epoxy_has_gl_extension("GL_ARB_timer_query"));
+	profile_report_at = xgettime() + 1.0;
+}
+
+boolean
+ogl_profile_enabled(void)
+{
+	const char *env;
+	if (profile_initialized) return profile_enabled;
+	env = g_getenv("FSV_PROFILE");
+	return env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
+}
+
+void
+ogl_set_profile_enabled(boolean enabled)
+{
+	profile_enabled = enabled;
+	profile_initialized = TRUE;
+	profile_gpu_available = enabled &&
+		(epoxy_gl_version() >= 33 || epoxy_has_gl_extension("GL_ARB_timer_query"));
+	profile_report_at = xgettime() + 1.0;
+	profile_render_cpu_sum = profile_render_cpu_max = 0.0; profile_render_cpu_count = 0;
+	profile_pick_cpu_sum = profile_pick_cpu_max = 0.0; profile_pick_cpu_count = 0;
+	profile_read_cpu_sum = profile_read_cpu_max = 0.0; profile_read_cpu_count = 0;
+	profile_gpu_render_sum = profile_gpu_render_max = 0.0; profile_gpu_render_count = 0;
+	profile_gpu_pick_sum = profile_gpu_pick_max = 0.0; profile_gpu_pick_count = 0;
+}
+
+static void
+profile_poll_gpu(void)
+{
+	unsigned int i;
+	if (!profile_gpu_available) return;
+	for (i = 0; i < PROFILE_QUERY_COUNT; i++) {
+		ProfileQuery *q = &profile_queries[i];
+		GLint ready = GL_FALSE;
+		GLuint64 ns;
+		if (!q->pending) continue;
+		glGetQueryObjectiv(q->query, GL_QUERY_RESULT_AVAILABLE, &ready);
+		if (!ready) continue;
+		glGetQueryObjectui64v(q->query, GL_QUERY_RESULT, &ns);
+		if (q->pick) {
+			double ms = (double)ns / 1000000.0;
+			profile_gpu_pick_sum += ms;
+			profile_gpu_pick_max = MAX(profile_gpu_pick_max, ms);
+			profile_gpu_pick_count++;
+		} else {
+			double ms = (double)ns / 1000000.0;
+			profile_gpu_render_sum += ms;
+			profile_gpu_render_max = MAX(profile_gpu_render_max, ms);
+			profile_gpu_render_count++;
+		}
+		q->pending = FALSE;
+	}
+}
+
+static GLuint
+profile_begin_geometry(boolean pick)
+{
+	ProfileQuery *q;
+	if (!profile_enabled) return 0;
+	profile_poll_gpu();
+	if (!profile_gpu_available) return 0;
+	q = &profile_queries[profile_query_next];
+	if (q->pending) return 0;
+	if (!q->query) glGenQueries(1, &q->query);
+	q->pick = pick;
+	q->pending = TRUE;
+	glBeginQuery(GL_TIME_ELAPSED, q->query);
+	profile_query_next = (profile_query_next + 1) % PROFILE_QUERY_COUNT;
+	return q->query;
+}
+
+static void
+profile_end_geometry(GLuint query)
+{
+	if (query) glEndQuery(GL_TIME_ELAPSED);
+}
+
+static void
+profile_report(void)
+{
+	double now;
+	if (!profile_enabled) return;
+	now = xgettime();
+	profile_poll_gpu();
+	if (now < profile_report_at) return;
+	g_print("FSV profile (ms avg/max, samples): render CPU %.2f/%.2f (%u), pick CPU %.2f/%.2f (%u), readback %.2f/%.2f (%u), GPU render %.2f/%.2f (%u), GPU pick %.2f/%.2f (%u)\n",
+		profile_render_cpu_count ? profile_render_cpu_sum/profile_render_cpu_count : 0.0, profile_render_cpu_max, profile_render_cpu_count,
+		profile_pick_cpu_count ? profile_pick_cpu_sum/profile_pick_cpu_count : 0.0, profile_pick_cpu_max, profile_pick_cpu_count,
+		profile_read_cpu_count ? profile_read_cpu_sum/profile_read_cpu_count : 0.0, profile_read_cpu_max, profile_read_cpu_count,
+		profile_gpu_render_count ? profile_gpu_render_sum/profile_gpu_render_count : 0.0, profile_gpu_render_max, profile_gpu_render_count,
+		profile_gpu_pick_count ? profile_gpu_pick_sum/profile_gpu_pick_count : 0.0, profile_gpu_pick_max, profile_gpu_pick_count);
+	profile_render_cpu_sum = profile_render_cpu_max = 0.0; profile_render_cpu_count = 0;
+	profile_pick_cpu_sum = profile_pick_cpu_max = 0.0; profile_pick_cpu_count = 0;
+	profile_read_cpu_sum = profile_read_cpu_max = 0.0; profile_read_cpu_count = 0;
+	profile_gpu_render_sum = profile_gpu_render_max = 0.0; profile_gpu_render_count = 0;
+	profile_gpu_pick_sum = profile_gpu_pick_max = 0.0; profile_gpu_pick_count = 0;
+	profile_report_at = now + 1.0;
+}
+
 FsvGlState gl;
 AboutGlState aboutGL;
 
@@ -158,11 +293,21 @@ ogl_init( void )
 	gl.color_location = glGetUniformLocation(gl.program, "color");
 	gl.lightning_enabled_location = glGetUniformLocation(gl.program, "lightning_enabled");
 	gl.use_vertex_color_location = glGetUniformLocation(gl.program, "use_vertex_color");
+	gl.use_node_id_location = glGetUniformLocation(gl.program, "use_node_id");
+	gl.selection_mode_location = glGetUniformLocation(gl.program, "selection_mode");
+	gl.highlighted_node_id_location = glGetUniformLocation(gl.program, "highlighted_node_id");
 
 	/* get the location of the "position" and "color" attributes */
 	gl.position_location = glGetAttribLocation(gl.program, "position");
 	gl.normal_location = glGetAttribLocation(gl.program, "normal");
 	gl.vcolor_location = glGetAttribLocation(gl.program, "vcolor");
+	gl.node_id_location = glGetAttribLocation(gl.program, "node_id");
+	gl.instance_bounds_location = glGetAttribLocation(gl.program, "instance_bounds");
+	gl.instance_shape_location = glGetAttribLocation(gl.program, "instance_shape");
+	gl.instance_transform_color_location = glGetAttribLocation(gl.program, "instance_transform_color");
+	gl.instance_node_id_location = glGetAttribLocation(gl.program, "instance_node_id");
+	gl.instanced_geometry_location = glGetUniformLocation(gl.program, "instanced_geometry");
+	gl.instanced_lod_dynamic_location = glGetUniformLocation(gl.program, "instanced_lod_dynamic");
 
 
 	// Shader programs for the splash and about screens
@@ -541,11 +686,21 @@ render(GtkGLArea *area, GdkGLContext *context)
 		else
 			hide = TRUE; /* Splash: unchanged legacy behaviour */
 
+		GLuint query = profile_begin_geometry(FALSE);
+		double geometry_started = profile_enabled ? xgettime() : 0.0;
 		geometry_draw( !(moving && hide) );
+		profile_end_geometry(query);
+		if (profile_enabled) {
+			double ms = (xgettime() - geometry_started) * 1000.0;
+			profile_render_cpu_sum += ms;
+			profile_render_cpu_max = MAX(profile_render_cpu_max, ms);
+			profile_render_cpu_count++;
+		}
 	}
 
 	/* Error check */
 	ogl_error();
+	if (profile_enabled) profile_report();
 
 	/* First frame after a mode switch is not drawn
 	 * (with the exception of splash screen mode) */
@@ -581,6 +736,11 @@ render(GtkGLArea *area, GdkGLContext *context)
 GLuint
 ogl_select_modern(GLint x, GLint y)
 {
+	double profile_started = profile_enabled ? xgettime() : 0.0;
+	double read_started;
+	GLuint query;
+	GLint old_scissor_box[4];
+	GLboolean scissor_was_enabled;
 	// As this can be called outside of a render() callback, need to set
 	// the context explicitly.
 	gtk_gl_area_make_current( GTK_GL_AREA(viewport_gl_area_w) );
@@ -597,15 +757,24 @@ ogl_select_modern(GLint x, GLint y)
 	// Cull triangles which normal is not towards the camera
 	//glEnable(GL_CULL_FACE);
 	glClearColor(0, 0, 0, 0);
+	glGetIntegerv(GL_SCISSOR_BOX, old_scissor_box);
+	scissor_was_enabled = glIsEnabled(GL_SCISSOR_TEST);
+	GLint viewport[4];
+	glGetIntegerv(GL_VIEWPORT, viewport);
+	GLint yy = viewport[3] - 1 - y;
+	/* Picking only needs the color/depth result at one pixel. Restricting
+	 * rasterization and the initial clear to that pixel cuts fragment and
+	 * overdraw work without changing the node-ID result. */
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(x, yy, 1, 1);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	query = profile_begin_geometry(TRUE);
 	geometry_draw(FALSE);
+	profile_end_geometry(query);
 
-	// Wait until all the pending drawing commands are really done.
-	// Ultra-mega-over slow !
-	// There are usually a long time between glDrawElements() and
-	// all the fragments completely rasterized.
-	glFlush();
-	glFinish();
+	/* glReadPixels below synchronizes the single requested pixel with the
+	 * queued draw. A glFinish here would block for the entire frame first,
+	 * adding a second full-pipeline stall without helping the readback. */
 
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
@@ -614,10 +783,14 @@ ogl_select_modern(GLint x, GLint y)
 	// Ultra-mega-over slow too, even for 1 pixel,
 	// because the framebuffer is on the GPU.
 	GLubyte color[4];
-	GLint viewport[4];
-	glGetIntegerv(GL_VIEWPORT, viewport);
-	GLint yy = viewport[3] - y;
+	read_started = profile_enabled ? xgettime() : 0.0;
 	glReadPixels(x, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &color);
+	if (profile_enabled) {
+		double ms = (xgettime() - read_started) * 1000.0;
+		profile_read_cpu_sum += ms;
+		profile_read_cpu_max = MAX(profile_read_cpu_max, ms);
+		profile_read_cpu_count++;
+	}
 	//g_print("ogl_select_modern: Color red %u green %u blue %u alpha %u\n", color[0], color[1], color[2], color[3]);
 	GLuint node_id = color[0] + (color[1] << 8) + (color[2] << 16);
 
@@ -628,9 +801,21 @@ ogl_select_modern(GLint x, GLint y)
 	setup_projection_matrix(TRUE);
 	setup_modelview_matrix();
 	ogl_upload_matrices(FALSE);
+	glDisable(GL_SCISSOR_TEST);
 	glClearColor(0, 0, 0, 0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	if (scissor_was_enabled) {
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(old_scissor_box[0], old_scissor_box[1], old_scissor_box[2], old_scissor_box[3]);
+	}
 	gl.render_mode = RENDERMODE_RENDER;
+	if (profile_enabled) {
+		double ms = (xgettime() - profile_started) * 1000.0;
+		profile_pick_cpu_sum += ms;
+		profile_pick_cpu_max = MAX(profile_pick_cpu_max, ms);
+		profile_pick_cpu_count++;
+		profile_report();
+	}
 	return node_id;
 }
 
@@ -640,6 +825,7 @@ static void
 realize_cb( GtkWidget *gl_area_w )
 {
 	gtk_gl_area_make_current( GTK_GL_AREA(gl_area_w) );
+	profile_init();
 	/* Check for OpenGL 3.1 support */
 	if (epoxy_gl_version() < 31)
 		g_warning(_(PACKAGE " assumes OpenGL 3.1 / GLSL 1.40 support "
