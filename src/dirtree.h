@@ -23,6 +23,7 @@ void dirtree_clear( void );
 void dirtree_entry_new( GNode *dnode );
 void dirtree_no_more_entries( void );
 void dirtree_entry_show( GNode *dnode );
+void dirtree_entry_select( GNode *dnode );
 boolean dirtree_entry_expanded( GNode *dnode );
 boolean dirtree_entry_has_subdir( GNode *dnode );
 void dirtree_entry_collapse_recursive( GNode *dnode );

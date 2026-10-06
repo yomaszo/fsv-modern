@@ -24,9 +24,11 @@ typedef enum {
 
 void window_init(GtkApplication *app, gpointer user_data);
 void window_set_access( boolean enabled );
+void window_reset_search(void);
 void window_set_view_mode( FsvMode mode );
 #ifdef FSV_COLOR_H
 void window_set_color_mode( ColorMode mode );
+void window_update_color_legend(void);
 #endif
 void window_birdseye_view_off( void);
 void window_statusbar( StatusBarID sb_id, const char *message );
@@ -37,6 +39,7 @@ void window_refresh_selected_node(void);
 void window_scan_logo_show(boolean show);
 void window_prepare_scene_fade(void);
 void window_start_scene_fade(void);
+void window_set_motion_overlays(boolean moving);
 
 
 /* end window.h */

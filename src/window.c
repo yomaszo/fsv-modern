@@ -43,6 +43,9 @@ static GtkWidget *color_mode_button_w;
 static GtkWidget *color_mode_label_w;
 static GtkWidget *mapv_view_button_w;
 static GtkWidget *treev_view_button_w;
+static GtkWidget *search_entry_w;
+static gchar *search_last_query;
+static gchar *search_last_match_path;
 
 /* Bird's-eye view toggle in the header */
 static GtkWidget *overview_tbutton_w;
@@ -77,12 +80,14 @@ static GtkWidget *properties_owner_w;
 static GtkWidget *properties_mode_w;
 static GtkWidget *properties_type_bar_w;
 static GtkWidget *legend_w;
+static GtkWidget *legend_items_w;
 static GtkWidget *legend_toggle_menu_item_w;
 static GtkWidget *scan_logo_w;
 static GtkWidget *scene_fade_w;
 static guint scan_logo_tick_id;
 static guint scene_fade_tick_id;
 static gint64 scan_logo_started_at;
+static gboolean motion_overlays_hidden;
 typedef struct {
 	int64 bytes[6];
 	const char *labels[6];
@@ -97,6 +102,111 @@ static guint properties_scan_source;
 static void window_refresh_context_toolbar(void);
 static void window_add_style_class(GtkWidget *widget, const char *class_name);
 static void window_update_properties_panel(void);
+
+void
+window_reset_search(void)
+{
+	g_clear_pointer(&search_last_query, g_free);
+	g_clear_pointer(&search_last_match_path, g_free);
+	if (search_entry_w != NULL)
+		gtk_entry_set_text(GTK_ENTRY(search_entry_w), "");
+}
+
+static GNode *
+window_next_search_node(GNode *node)
+{
+	if (node->children != NULL)
+		return node->children;
+	while (node != NULL && node->next == NULL)
+		node = node->parent;
+	return node != NULL ? node->next : NULL;
+}
+
+static gchar *
+window_search_fold(const char *text)
+{
+	gchar *valid = g_utf8_make_valid(text != NULL ? text : "", -1);
+	gchar *folded = g_utf8_casefold(valid, -1);
+	g_free(valid);
+	return folded;
+}
+
+static void
+window_search_activate(GtkEntry *entry, gpointer user_data)
+{
+	const char *text = gtk_entry_get_text(entry);
+	gchar *query = g_strstrip(g_strdup(text));
+	gchar *folded_query;
+	GNode *node, *first_match = NULL, *next_match = NULL, *match = NULL;
+	gboolean previous_match_seen;
+	guint match_count = 0, next_match_index = 0;
+	(void)user_data;
+
+	if (*query == '\0') {
+		g_free(query);
+		return;
+	}
+	if (globals.fsv_mode == FSV_SPLASH || root_dnode == NULL) {
+		window_statusbar(SB_RIGHT, _("Please wait for the filesystem scan to finish."));
+		g_free(query);
+		return;
+	}
+
+	if (g_strcmp0(query, search_last_query) != 0) {
+		g_free(search_last_query);
+		search_last_query = g_strdup(query);
+		g_clear_pointer(&search_last_match_path, g_free);
+	}
+
+	folded_query = window_search_fold(query);
+	previous_match_seen = search_last_match_path == NULL;
+	for (node = root_dnode; node != NULL; node = window_next_search_node(node)) {
+		gchar *folded_name;
+		gboolean is_match;
+		if (NODE_IS_METANODE(node))
+			continue;
+		folded_name = window_search_fold(NODE_DESC(node)->name);
+		is_match = strstr(folded_name, folded_query) != NULL;
+		g_free(folded_name);
+		if (!is_match)
+			continue;
+
+		match_count++;
+		if (first_match == NULL)
+			first_match = node;
+		if (!previous_match_seen) {
+			if (g_strcmp0(node_absname(node), search_last_match_path) == 0) {
+				previous_match_seen = TRUE;
+			}
+		}
+		else if (next_match == NULL) {
+			next_match = node;
+			next_match_index = match_count;
+		}
+	}
+
+	g_free(folded_query);
+	if (match_count == 0) {
+		g_clear_pointer(&search_last_match_path, g_free);
+		window_statusbar(SB_RIGHT, _("No files or folders match that search."));
+		g_free(query);
+		return;
+	}
+
+	match = next_match != NULL ? next_match : first_match;
+	if (next_match == NULL)
+		next_match_index = 1;
+	g_free(search_last_match_path);
+	search_last_match_path = g_strdup(node_absname(match));
+	window_set_selected_node(match);
+	camera_look_at(match);
+
+	gchar *message = g_strdup_printf(_("Search result %u of %u: %s"),
+		next_match_index, match_count, node_absname(match));
+	window_statusbar(SB_RIGHT, message);
+	g_free(message);
+	g_free(query);
+}
 
 static gboolean
 window_scan_logo_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data)
@@ -179,6 +289,33 @@ window_prepare_scene_fade(void)
 }
 
 void
+window_set_motion_overlays(boolean moving)
+{
+	if (moving) {
+		motion_overlays_hidden = TRUE;
+		if (legend_w != NULL)
+			gtk_widget_hide(legend_w);
+		if (context_toolbar_w != NULL)
+			gtk_widget_hide(context_toolbar_w);
+		if (breadcrumb_panel_w != NULL)
+			gtk_widget_hide(breadcrumb_panel_w);
+		return;
+	}
+
+	if (!motion_overlays_hidden)
+		return;
+
+	motion_overlays_hidden = FALSE;
+	if (legend_w != NULL && legend_toggle_menu_item_w != NULL &&
+	    gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(legend_toggle_menu_item_w)))
+		gtk_widget_show(legend_w);
+	if (breadcrumb_panel_w != NULL &&
+	    (scan_logo_w == NULL || !gtk_widget_get_visible(scan_logo_w)))
+		gtk_widget_show(breadcrumb_panel_w);
+	window_refresh_context_toolbar();
+}
+
+void
 window_start_scene_fade(void)
 {
 	if (scene_fade_w == NULL)
@@ -192,8 +329,13 @@ static void
 window_legend_visibility_toggled(GtkCheckMenuItem *item, gpointer user_data)
 {
 	(void)user_data;
-	if (legend_w != NULL)
-		gtk_widget_set_visible(legend_w, gtk_check_menu_item_get_active(item));
+	if (legend_w != NULL) {
+		gboolean visible = gtk_check_menu_item_get_active(item);
+		if (motion_overlays_hidden)
+			gtk_widget_hide(legend_w);
+		else
+			gtk_widget_set_visible(legend_w, visible);
+	}
 }
 
 static void
@@ -430,10 +572,14 @@ window_update_properties_panel(void)
 	unsigned int files = 0, folders = 0;
 	char *size_text;
 	char *path;
+	char *display_name;
 	char mode_text[8];
 	if (node == NULL || properties_name_w == NULL)
 		return;
-	gtk_label_set_text(GTK_LABEL(properties_name_w), NODE_DESC(node)->name[0] ? NODE_DESC(node)->name : _("Filesystem root"));
+	display_name = g_filename_display_name(NODE_DESC(node)->name[0] ?
+		NODE_DESC(node)->name : _("Filesystem root"));
+	gtk_label_set_text(GTK_LABEL(properties_name_w), display_name);
+	g_free(display_name);
 	gtk_label_set_text(GTK_LABEL(properties_type_w), NODE_IS_DIR(node) ?
 		(DIR_EXPANDED(node) ? _("Directory · expanded") : _("Directory · collapsed")) : _(node_type_names[NODE_DESC(node)->type]));
 	size = NODE_IS_DIR(node) ? DIR_NODE_DESC(node)->subtree.size : NODE_DESC(node)->size;
@@ -454,7 +600,9 @@ window_update_properties_panel(void)
 	gtk_label_set_text(GTK_LABEL(properties_folders_w), modified_text);
 	g_free(modified_text);
 	path = (char *)node_absname(node);
-	gtk_label_set_text(GTK_LABEL(properties_path_w), path);
+	display_name = g_filename_display_name(path);
+	gtk_label_set_text(GTK_LABEL(properties_path_w), display_name);
+	g_free(display_name);
 	if (node->parent != NULL && NODE_IS_DIR(node->parent) && DIR_NODE_DESC(node->parent)->subtree.size > 0) {
 		double percent = 100.0 * (double)size / DIR_NODE_DESC(node->parent)->subtree.size;
 		modified_text = g_strdup_printf(_("%.0f%% of parent"), percent);
@@ -494,20 +642,196 @@ window_update_properties_panel(void)
 	properties_scan_source = g_idle_add(window_properties_type_scan_idle, NULL);
 }
 
+typedef struct {
+	gboolean gradient;
+	SpectrumType spectrum_type;
+	RGBcolor start;
+	RGBcolor end;
+} LegendSwatch;
+
+static gboolean
+window_legend_swatch_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+	LegendSwatch *swatch = user_data;
+	GtkAllocation allocation;
+	double width, height;
+
+	gtk_widget_get_allocation(widget, &allocation);
+	width = allocation.width;
+	height = allocation.height;
+	if (swatch->gradient) {
+		RGBcolor *boundary_colors[] = { &swatch->start, &swatch->end };
+		cairo_pattern_t *pattern = cairo_pattern_create_linear(0, 0, width, 0);
+		for (int i = 0; i <= 16; i++) {
+			double position = i / 16.0;
+			RGBcolor color = color_spectrum_color(swatch->spectrum_type,
+				position, swatch->spectrum_type == SPECTRUM_GRADIENT ?
+				boundary_colors : NULL);
+			cairo_pattern_add_color_stop_rgb(pattern, position,
+				color.r, color.g, color.b);
+		}
+		cairo_set_source(cr, pattern);
+		cairo_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0);
+		cairo_fill(cr);
+		cairo_pattern_destroy(pattern);
+	}
+	else {
+		cairo_set_source_rgb(cr, swatch->start.r, swatch->start.g, swatch->start.b);
+		cairo_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0);
+		cairo_fill(cr);
+	}
+
+	cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.55);
+	cairo_set_line_width(cr, 1.0);
+	cairo_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0);
+	cairo_stroke(cr);
+	return FALSE;
+}
+
 static void
-window_add_legend_item(GtkWidget *legend_w, const char *swatch_class,
-		       const char *label_text)
+window_legend_swatch_free(gpointer user_data, GClosure *closure)
+{
+	(void)closure;
+	g_free(user_data);
+}
+
+static void
+window_add_legend_item(const char *label_text, const RGBcolor *start,
+		       const RGBcolor *end, SpectrumType spectrum_type)
 {
 	GtkWidget *row_w = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 	GtkWidget *swatch_w = gtk_drawing_area_new();
 	GtkWidget *label_w = gtk_label_new(label_text);
-	gtk_widget_set_size_request(swatch_w, 12, 12);
-	window_add_style_class(swatch_w, "fsv-swatch");
-	window_add_style_class(swatch_w, swatch_class);
+	LegendSwatch *swatch = g_new0(LegendSwatch, 1);
+
+	gtk_widget_set_size_request(swatch_w, 28, 12);
+	swatch->start = *start;
+	swatch->end = end != NULL ? *end : *start;
+	swatch->gradient = end != NULL;
+	swatch->spectrum_type = spectrum_type;
+	g_signal_connect_data(swatch_w, "draw", G_CALLBACK(window_legend_swatch_draw),
+		swatch, window_legend_swatch_free, 0);
 	gtk_box_pack_start(GTK_BOX(row_w), swatch_w, FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(row_w), label_w, FALSE, FALSE, 0);
-	gtk_box_pack_start(GTK_BOX(legend_w), row_w, FALSE, FALSE, 2);
+	gtk_box_pack_start(GTK_BOX(legend_items_w), row_w, FALSE, FALSE, 2);
 	gtk_widget_show_all(row_w);
+}
+
+static void
+window_add_legend_section(const char *title)
+{
+	GtkWidget *label_w = gtk_label_new(title);
+	gtk_label_set_xalign(GTK_LABEL(label_w), 0.0);
+	gtk_style_context_add_class(gtk_widget_get_style_context(label_w), "fsv-meta");
+	gtk_box_pack_start(GTK_BOX(legend_items_w), label_w, FALSE, FALSE, 3);
+	gtk_widget_show(label_w);
+}
+
+static gchar *
+window_format_timestamp(time_t timestamp)
+{
+	GDateTime *date = g_date_time_new_from_unix_local((gint64)timestamp);
+	gchar *text = date != NULL ? g_date_time_format(date, "%Y-%m-%d") :
+		g_strdup(_("Unknown"));
+	if (date != NULL)
+		g_date_time_unref(date);
+	return text;
+}
+
+void
+window_update_color_legend(void)
+{
+	GList *children, *link;
+	struct ColorConfig config;
+	ColorMode mode;
+
+	if (legend_items_w == NULL)
+		return;
+
+	children = gtk_container_get_children(GTK_CONTAINER(legend_items_w));
+	for (link = children; link != NULL; link = link->next)
+		gtk_widget_destroy(GTK_WIDGET(link->data));
+	g_list_free(children);
+
+	color_get_config(&config);
+	mode = color_get_mode();
+	switch (mode) {
+		case COLOR_BY_NODETYPE:
+			window_add_legend_section(_("Node types"));
+			for (int type = NODE_DIRECTORY; type < NUM_NODE_TYPES; type++)
+				window_add_legend_item(_(node_type_names[type]),
+					&config.by_nodetype.colors[type], NULL, SPECTRUM_NONE);
+			break;
+
+		case COLOR_BY_TIMESTAMP: {
+			const char *timestamp_name;
+			gchar *old_text, *new_text, *range_text;
+			switch (config.by_timestamp.timestamp_type) {
+				case TIMESTAMP_ACCESS: timestamp_name = _("Last accessed"); break;
+				case TIMESTAMP_MODIFY: timestamp_name = _("Last modified"); break;
+				case TIMESTAMP_ATTRIB: timestamp_name = _("Attributes changed"); break;
+				default: timestamp_name = _("Timestamp"); break;
+			}
+			old_text = window_format_timestamp(config.by_timestamp.old_time);
+			new_text = window_format_timestamp(config.by_timestamp.new_time);
+			range_text = g_strdup_printf(_("%s: %s to %s"),
+				timestamp_name, old_text, new_text);
+			window_add_legend_item(range_text,
+				&config.by_timestamp.old_color, &config.by_timestamp.new_color,
+				config.by_timestamp.spectrum_type);
+			g_free(range_text);
+			g_free(old_text);
+			g_free(new_text);
+			window_add_legend_section(_("Directories"));
+			window_add_legend_item(_(node_type_names[NODE_DIRECTORY]),
+				&config.by_nodetype.colors[NODE_DIRECTORY], NULL, SPECTRUM_NONE);
+			break;
+		}
+
+		case COLOR_BY_WPATTERN: {
+			GList *group_link;
+			int group_number = 1;
+			window_add_legend_section(_("Wildcard matches"));
+			for (group_link = config.by_wpattern.wpgroup_list;
+			     group_link != NULL; group_link = group_link->next, group_number++) {
+				struct WPatternGroup *group = group_link->data;
+				GString *patterns = g_string_new("");
+				GList *pattern_link;
+				for (pattern_link = group->wp_list; pattern_link != NULL;
+				     pattern_link = pattern_link->next) {
+					if (patterns->len > 0)
+						g_string_append(patterns, ", ");
+					g_string_append(patterns, (const char *)pattern_link->data);
+				}
+				gchar *label = patterns->len > 0 ?
+					g_strdup_printf("%s", patterns->str) :
+					g_strdup_printf(_("Group %d (no patterns)"), group_number);
+				window_add_legend_item(label, &group->color, NULL, SPECTRUM_NONE);
+				g_free(label);
+				g_string_free(patterns, TRUE);
+			}
+			window_add_legend_item(_("No wildcard match"),
+				&config.by_wpattern.default_color, NULL, SPECTRUM_NONE);
+			window_add_legend_section(_("Directories"));
+			window_add_legend_item(_(node_type_names[NODE_DIRECTORY]),
+				&config.by_nodetype.colors[NODE_DIRECTORY], NULL, SPECTRUM_NONE);
+			break;
+		}
+
+		case COLOR_BY_FILETYPE:
+			window_add_legend_section(_("Files by category"));
+			for (int category = 0; category < COLOR_FILETYPE_CATEGORY_COUNT; category++) {
+				RGBcolor color = color_filetype_category_color(category);
+				window_add_legend_item(_(color_filetype_category_name(category)),
+					&color, NULL, SPECTRUM_NONE);
+			}
+			window_add_legend_section(_("Directories use muted dominant-category colors"));
+			break;
+
+		case COLOR_NONE:
+			break;
+	}
+	color_config_destroy(&config);
 }
 
 static void
@@ -589,11 +913,8 @@ window_add_viewport_overlays(GtkWidget *overlay_w)
 	g_signal_connect(legend_close_w, "clicked", G_CALLBACK(window_legend_close_clicked), NULL);
 	gtk_box_pack_end(GTK_BOX(row_w), legend_close_w, FALSE, FALSE, 0);
 	gtk_box_pack_start(GTK_BOX(legend_w), row_w, FALSE, FALSE, 0);
-	window_add_legend_item(legend_w, "type-code", _("SOURCE CODE"));
-	window_add_legend_item(legend_w, "type-media", _("MEDIA"));
-	window_add_legend_item(legend_w, "type-archive", _("ARCHIVES"));
-	window_add_legend_item(legend_w, "type-system", _("SYSTEM / EXEC"));
-	window_add_legend_item(legend_w, "type-docs", _("DOCUMENTS"));
+	legend_items_w = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+	gtk_box_pack_start(GTK_BOX(legend_w), legend_items_w, FALSE, FALSE, 0);
 	gtk_widget_set_halign(legend_w, GTK_ALIGN_END);
 	gtk_widget_set_valign(legend_w, GTK_ALIGN_END);
 	gtk_widget_set_margin_end(legend_w, 14);
@@ -677,6 +998,7 @@ window_refresh_context_toolbar(void)
 {
 	boolean is_dir;
 	boolean expanded;
+	char *display_name;
 	if (context_toolbar_w == NULL)
 		return;
 	if (selected_node == NULL) {
@@ -688,7 +1010,9 @@ window_refresh_context_toolbar(void)
 	gtk_widget_show(context_node_label_w);
 	gtk_widget_show(context_look_button_w);
 	gtk_widget_show(context_properties_button_w);
-	gtk_label_set_text(GTK_LABEL(context_node_label_w), NODE_DESC(selected_node)->name);
+	display_name = g_filename_display_name(NODE_DESC(selected_node)->name);
+	gtk_label_set_text(GTK_LABEL(context_node_label_w), display_name);
+	g_free(display_name);
 	is_dir = NODE_IS_DIR(selected_node);
 	if (is_dir) {
 		expanded = dirtree_entry_expanded(selected_node) ||
@@ -706,7 +1030,10 @@ window_refresh_context_toolbar(void)
 		gtk_widget_hide(context_expand_button_w);
 		gtk_widget_hide(context_expand_all_button_w);
 	}
-	gtk_widget_show(context_toolbar_w);
+	if (motion_overlays_hidden)
+		gtk_widget_hide(context_toolbar_w);
+	else
+		gtk_widget_show(context_toolbar_w);
 }
 
 static void
@@ -725,9 +1052,12 @@ window_update_breadcrumb(GNode *node)
 	for (link = parts; link != NULL; link = link->next) {
 		GNode *breadcrumb_node = (GNode *)link->data;
 		const char *name = NODE_DESC(breadcrumb_node)->name;
+		char *display_name;
 		if (text->len > 0)
 			g_string_append(text, " › ");
-		g_string_append(text, name[0] ? name : _("/. (root)"));
+		display_name = g_filename_display_name(name[0] ? name : _("/. (root)"));
+		g_string_append(text, display_name);
+		g_free(display_name);
 	}
 	gtk_label_set_text(GTK_LABEL(breadcrumb_label_w), text->str);
 	g_string_free(text, TRUE);
@@ -790,7 +1120,6 @@ window_init(GtkApplication *app, gpointer user_data)
 	GtkWidget *hamburger_menu_w;
 	GtkWidget *colors_menu_w;
 	GtkWidget *settings_menu_w;
-	GtkWidget *search_entry_w;
 	GtkWidget *menu_w;
 	GtkWidget *menu_item_w;
 	GtkWidget *hpaned_w;
@@ -986,8 +1315,11 @@ window_init(GtkApplication *app, gpointer user_data)
 
 	search_entry_w = gtk_search_entry_new();
 	gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry_w), _("Search files and folders…"));
+	gtk_widget_set_tooltip_text(search_entry_w,
+		_("Enter a name to find it; press Enter again to cycle through matches."));
 	gtk_widget_set_size_request(search_entry_w, 260, -1);
 	window_add_style_class(search_entry_w, "fsv-search");
+	g_signal_connect(search_entry_w, "activate", G_CALLBACK(window_search_activate), NULL);
 	gtk_header_bar_set_custom_title(GTK_HEADER_BAR(header_w), search_entry_w);
 	gtk_widget_show(search_entry_w);
 
@@ -1163,6 +1495,7 @@ window_set_color_mode( ColorMode mode )
 			(mode == COLOR_BY_FILETYPE ? _("Color: By file type") : _("Color: By wildcards")));
 		gtk_label_set_text(GTK_LABEL(color_mode_label_w), label);
 	}
+	window_update_color_legend();
 }
 
 
@@ -1199,17 +1532,19 @@ window_birdseye_view_off( void )
 void
 window_statusbar( StatusBarID sb_id, const char *message )
 {
+	char *valid_message = g_utf8_make_valid(message != NULL ? message : "", -1);
 	switch (sb_id) {
 		case SB_LEFT:
-		gtk_label_set_text(GTK_LABEL(summary_label_w), message ? message : "");
+		gtk_label_set_text(GTK_LABEL(summary_label_w), valid_message);
 		break;
 
 		case SB_RIGHT:
-		gtk_label_set_text(GTK_LABEL(path_label_w), message ? message : "");
+		gtk_label_set_text(GTK_LABEL(path_label_w), valid_message);
 		break;
 
 		SWITCH_FAIL
 	}
+	g_free(valid_message);
 }
 
 
@@ -1219,14 +1554,15 @@ window_set_directory_summary(GNode *dnode)
 {
 	char *size_text;
 	char *summary;
-	const char *name;
+	char *name;
 	unsigned int dirs, files;
 	unsigned int type;
 	int64 size;
 	if (summary_label_w == NULL || dnode == NULL || !NODE_IS_DIR(dnode))
 		return;
 	size = DIR_NODE_DESC(dnode)->subtree.size;
-	name = NODE_DESC(dnode)->name[0] ? NODE_DESC(dnode)->name : _("/. (root)");
+	name = g_filename_display_name(NODE_DESC(dnode)->name[0] ?
+		NODE_DESC(dnode)->name : _("/. (root)"));
 	dirs = DIR_NODE_DESC(dnode)->subtree.counts[NODE_DIRECTORY];
 	files = 0;
 	for (type = NODE_REGFILE; type < NUM_NODE_TYPES; type++)
@@ -1246,6 +1582,7 @@ window_set_directory_summary(GNode *dnode)
 	gtk_label_set_text(GTK_LABEL(summary_label_w), summary);
 	g_free(summary);
 	g_free(size_text);
+	g_free(name);
 }
 
 void
@@ -1264,6 +1601,8 @@ window_set_selected_node(GNode *node)
 	geometry_highlight_node(node, FALSE);
 	window_statusbar(SB_RIGHT, node_absname(node));
 	directory = NODE_IS_DIR(node) ? node : node->parent;
+	if (directory != NULL && NODE_IS_DIR(directory))
+		dirtree_entry_select(directory);
 	if (NODE_IS_DIR(node))
 		filelist_show_directory(node);
 	window_set_directory_summary(directory);
@@ -1284,9 +1623,12 @@ window_set_files_section(const char *directory_name)
 {
 	gchar *upper_name;
 	gchar *title;
+	gchar *display_name;
 	if (files_section_label_w == NULL)
 		return;
-	upper_name = g_utf8_strup(directory_name ? directory_name : "", -1);
+	display_name = g_filename_display_name(directory_name ? directory_name : "");
+	upper_name = g_utf8_strup(display_name, -1);
+	g_free(display_name);
 	if (upper_name[0] == '\0') {
 		g_free(upper_name);
 		upper_name = g_utf8_strup(_("/. (root)"), -1);

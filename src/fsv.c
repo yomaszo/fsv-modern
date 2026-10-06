@@ -33,6 +33,7 @@ enum {
 	OPT_TREEV,
 	OPT_CACHEDIR,
 	OPT_NOCACHE,
+	OPT_BACKEND,
 	OPT_HELP
 };
 
@@ -46,6 +47,7 @@ static struct option cli_opts[] = {
 	{ "treev", no_argument, NULL, OPT_TREEV },
 	{ "cachedir", required_argument, NULL, OPT_CACHEDIR },
 	{ "nocache", no_argument, NULL, OPT_NOCACHE },
+	{ "backend", required_argument, NULL, OPT_BACKEND },
 	{ "help", no_argument, NULL, OPT_HELP },
 	{ NULL, 0, NULL, 0 }
 };
@@ -56,13 +58,44 @@ static const char usage_summary[] = __("\n"
     "      Version " VERSION "\n"
     "Copyright (C)1999 Daniel Richard G. <skunk@mit.edu>\n"
     "\n"
-    "Usage: %s [rootdir] [options]\n"
-    "  rootdir      Root directory for visualization\n"
-    "               (defaults to current directory)\n"
-    "  --mapv       Start in MapV mode (default)\n"
-    "  --treev      Start in TreeV mode\n"
-    "  --help       Print this help and exit\n"
+    "Usage: %s [options] [ROOTDIR]\n"
+    "\n"
+    "Options:\n"
+    "  --mapv                 Start in MapV mode (default)\n"
+    "  --treev                Start in TreeV mode\n"
+    "  --backend BACKEND      Select GTK's display backend: auto, x11, or wayland\n"
+    "  --cachedir DIR         Reserved for a future cache implementation (currently ignored)\n"
+    "  --nocache              Reserved for a future cache implementation (currently ignored)\n"
+    "  --help                 Show this help and exit\n"
+    "\n"
+    "ROOTDIR defaults to the current directory. Options may be placed before or\n"
+    "after ROOTDIR. Only one root directory is used.\n"
+    "\n"
+    "Backend selection:\n"
+    "  FSV_BACKEND=auto|x11|wayland may be used instead of --backend.\n"
+    "  An explicit --backend option takes precedence over FSV_BACKEND.\n"
+    "  'auto' leaves backend choice to GTK (normally the current desktop session).\n"
+    "  On a Wayland session, 'x11' normally runs through XWayland.\n"
+    "\n"
+    "Examples:\n"
+    "  %s ~/Documents\n"
+    "  %s --treev --backend wayland ~\n"
+    "  FSV_BACKEND=x11 %s ~\n"
     "\n");
+
+static gboolean
+set_backend( const char *backend )
+{
+	if (strcmp(backend, "auto") == 0) {
+		g_unsetenv("GDK_BACKEND");
+		return TRUE;
+	}
+	if (strcmp(backend, "x11") == 0 || strcmp(backend, "wayland") == 0) {
+		g_setenv("GDK_BACKEND", backend, TRUE);
+		return TRUE;
+	}
+	return FALSE;
+}
 
 
 /* Helper function for fsv_set_mode( ) */
@@ -147,6 +180,7 @@ fsv_set_mode( FsvMode mode )
 void
 fsv_load( const char *dir )
 {
+	window_reset_search();
 	/* Lock down interface */
 	window_set_access( FALSE );
 	/* Selection pointers reference the old tree; clear its viewport frame
@@ -210,6 +244,12 @@ main( int argc, char **argv )
 	/* Initialize global variables */
 	globals.fstree = NULL;
 	globals.history = NULL;
+	/* Select the display backend before GTK initializes. */
+	if (g_getenv("FSV_BACKEND") != NULL) {
+		const char *backend = g_getenv("FSV_BACKEND");
+		if (!set_backend(backend))
+			fprintf(stderr, _("FSV_BACKEND=%s is unsupported; use auto, x11 or wayland.\n"), backend);
+	}
 	/* Set sane camera state so setup_modelview_matrix( ) in ogl.c
 	 * doesn't choke. (It does get called in splash screen mode) */
 	camera->fov = 45.0;
@@ -254,13 +294,23 @@ main( int argc, char **argv )
 			/* TODO: Implement caching */
 			break;
 
+			case OPT_BACKEND:
+			if (!set_backend(optarg)) {
+				fprintf(stderr, _("Unsupported GTK backend '%s'. Use auto, x11 or wayland.\n"), optarg);
+				exit(EXIT_FAILURE);
+			}
+			break;
+
 			case OPT_HELP:
-			/* --help */
-			default:
-			/* unrecognized option */
-			printf( _(usage_summary), argv[0] );
+			printf( _(usage_summary), argv[0], argv[0], argv[0], argv[0] );
 			fflush( stdout );
 			exit( EXIT_SUCCESS );
+			break;
+
+			case '?':
+			default:
+			fprintf(stderr, _("Try '%s --help' for more information.\n"), argv[0]);
+			exit(EXIT_FAILURE);
 			break;
 		}
 	}

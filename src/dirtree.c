@@ -43,6 +43,9 @@ static Icon dir_colexp_mini_icons[2];
 /* Current directory */
 static GNode *dirtree_current_dnode;
 
+static void block_colexp_handlers(void);
+static void unblock_colexp_handlers(void);
+
 
 /* Returns TRUE if the given directory has at least one subdirectory
  * (i.e. something that could ever appear as an expandable child row in
@@ -251,19 +254,20 @@ void
 dirtree_entry_new( GNode *dnode )
 {
 	GtkTreePath *parent_tnode = NULL;
-	const char *name;
+	char *name;
 	boolean expanded;
 
 	g_assert( NODE_IS_DIR(dnode) );
 
 	parent_tnode = DIR_NODE_DESC(dnode->parent)->tnode;
 	if (strlen( NODE_DESC(dnode)->name ) > 0)
-		name = NODE_DESC(dnode)->name;
+		name = g_filename_display_name(NODE_DESC(dnode)->name);
 	else
-		name = _("/. (root)");
+		name = g_strdup(_("/. (root)"));
 	expanded = g_node_depth( dnode ) <= 2;
 
 	DIR_NODE_DESC(dnode)->tnode = gui_tree_node_add( dir_tree_w, parent_tnode, dir_colexp_mini_icons, name, expanded, dnode );
+	g_free(name);
 	DIR_NODE_DESC(dnode)->tree_row_expanded = expanded;
 }
 
@@ -301,6 +305,31 @@ dirtree_entry_show( GNode *dnode )
 	gtk_tree_selection_select_path(select, DIR_NODE_DESC(dnode)->tnode);
 
 	dirtree_current_dnode = dnode;
+}
+
+/* Expands and scrolls the tree to a directory without changing the current
+ * 3D selection through dirtree_select_cb( ). */
+void
+dirtree_entry_select( GNode *dnode )
+{
+	GtkTreeSelection *selection;
+	GtkTreePath *path;
+
+	if (dnode == NULL || dir_tree_w == NULL)
+		return;
+
+	g_assert(NODE_IS_DIR(dnode));
+	path = DIR_NODE_DESC(dnode)->tnode;
+	if (NODE_IS_DIR(dnode->parent) &&
+	    !dirtree_entry_expanded(dnode->parent))
+		colexp(dnode->parent, COLEXP_EXPAND_ANY);
+
+	selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(dir_tree_w));
+	g_signal_handlers_block_by_func(selection, G_CALLBACK(dirtree_select_cb), NULL);
+	gtk_tree_selection_select_path(selection, path);
+	gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(dir_tree_w), path, NULL,
+		FALSE, 0.5, 0.0);
+	g_signal_handlers_unblock_by_func(selection, G_CALLBACK(dirtree_select_cb), NULL);
 }
 
 

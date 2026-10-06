@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fsv User Guide</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #0b121b;
+      --panel: #111d29;
+      --line: #29404f;
+      --text: #dbe8ec;
+      --muted: #9aadb7;
+      --accent: #78d7df;
+      --warm: #f2c184;
+    }
+    * { box-sizing: border-box; }
+    body {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 22px 60px;
+      background: var(--page);
+      color: var(--text);
+      font: 16px/1.65 system-ui, sans-serif;
+    }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { color: var(--accent); font-size: 2.3rem; margin-bottom: .25rem; }
+    h2 { margin-top: 2.4rem; padding-bottom: .45rem; border-bottom: 1px solid var(--line); }
+    h3 { color: var(--warm); margin-bottom: .4rem; }
+    p, li { color: var(--muted); }
+    strong { color: var(--text); }
+    code, kbd {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #0b151f;
+      color: var(--accent);
+      padding: 2px 6px;
+      font: .92em ui-monospace, monospace;
+    }
+    pre {
+      overflow-x: auto;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #08111a;
+      color: var(--text);
+    }
+    a { color: var(--accent); }
+    .lead { font-size: 1.12rem; max-width: 68ch; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    .card p { margin-bottom: 0; }
+    .diagram {
+      margin: 22px 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #08111a;
+    }
+    .diagram svg { display: block; width: 100%; height: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--accent); }
+    td { color: var(--muted); }
+    .note { border-left: 3px solid var(--warm); padding: 8px 14px; background: #171a1c; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>fsv User Guide</h1>
+    <p class="lead">Explore a filesystem as an interactive 3D map or a circular tree. This guide covers the main window, navigation, coloring, settings, and command-line options.</p>
+  </header>
+
+  <h2>Getting started</h2>
+  <p>fsv scans the directory you choose and builds a 3D view of its folders and files. A large tree may take time to scan and arrange. The application opens in <strong>MapV</strong> unless you choose TreeV with the <strong>Vis</strong> menu or <code>--treev</code>.</p>
+  <p>To change the scanned root while the app is open, use <strong>File → Change root…</strong> or the header's <strong>Set as root</strong> button.</p>
+
+  <h2>Window map</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 900 430" role="img" aria-labelledby="map-title map-desc">
+      <title id="map-title">Map of fsv's main window</title>
+      <desc id="map-desc">The header is at the top. The directory tree and file list are at left. The 3D viewport is central. Breadcrumb, properties, object actions, and legend panels appear over the viewport.</desc>
+      <rect x="12" y="12" width="876" height="406" rx="16" fill="#0d1822" stroke="#385363" stroke-width="2"/>
+      <rect x="24" y="24" width="852" height="54" rx="9" fill="#192a37" stroke="#385363"/>
+      <text x="43" y="57" fill="#78d7df" font-size="17" font-family="sans-serif">Menu · MapV / TreeV / Gource · Root · Up · Overview</text>
+      <rect x="610" y="36" width="150" height="30" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="627" y="56" fill="#9aadb7" font-size="14" font-family="sans-serif">Search</text>
+      <rect x="772" y="36" width="88" height="30" rx="7" fill="#243b49"/>
+      <text x="790" y="56" fill="#dbe8ec" font-size="14" font-family="sans-serif">Settings</text>
+      <rect x="24" y="90" width="230" height="300" rx="9" fill="#14212c" stroke="#385363"/>
+      <text x="43" y="120" fill="#78d7df" font-size="15" font-family="sans-serif">DIRECTORIES</text>
+      <path d="M48 145h12m8 0h12m8 0h12M48 174h12m8 0h12M48 203h12" stroke="#708a97" stroke-width="2"/>
+      <text x="110" y="150" fill="#dbe8ec" font-size="14" font-family="sans-serif">Folder tree</text>
+      <text x="110" y="179" fill="#dbe8ec" font-size="14" font-family="sans-serif">Expanded folders</text>
+      <text x="110" y="208" fill="#dbe8ec" font-size="14" font-family="sans-serif">Selected folder</text>
+      <line x1="35" y1="230" x2="243" y2="230" stroke="#385363"/>
+      <text x="43" y="258" fill="#78d7df" font-size="15" font-family="sans-serif">FILES IN FOLDER</text>
+      <text x="48" y="286" fill="#dbe8ec" font-size="14" font-family="sans-serif">Files and subfolders</text>
+      <rect x="267" y="90" width="609" height="300" rx="9" fill="#0d2832" stroke="#385363"/>
+      <text x="286" y="119" fill="#9aadb7" font-size="13" font-family="sans-serif">Breadcrumb · hidden while camera moves</text>
+      <rect x="748" y="130" width="110" height="87" rx="9" fill="#192a37" stroke="#78d7df"/>
+      <text x="761" y="155" fill="#dbe8ec" font-size="13" font-family="sans-serif">Properties</text>
+      <text x="761" y="177" fill="#9aadb7" font-size="12" font-family="sans-serif">node details</text>
+      <g fill="#79d9df" stroke="#0b151f" stroke-width="2">
+        <rect x="442" y="174" width="85" height="48" rx="5"/>
+        <rect x="370" y="244" width="58" height="40" rx="4" fill="#eebd78"/>
+        <rect x="452" y="252" width="72" height="32" rx="4" fill="#93d0a9"/>
+        <rect x="549" y="238" width="55" height="46" rx="4" fill="#db8992"/>
+        <rect x="478" y="300" width="64" height="36" rx="4" fill="#9cbbc5"/>
+      </g>
+      <path d="M484 222v30M458 222l-59 22m112-22 66 16m-91 46v16" stroke="#c1d5d9" stroke-width="3"/>
+      <rect x="410" y="350" width="285" height="29" rx="7" fill="#192a37" stroke="#385363"/>
+      <text x="443" y="370" fill="#dbe8ec" font-size="13" font-family="sans-serif">Selected object actions · hidden while moving</text>
+      <rect x="727" y="319" width="132" height="61" rx="8" fill="#192a37" stroke="#385363"/>
+      <text x="742" y="341" fill="#78d7df" font-size="12" font-family="sans-serif">Color legend</text>
+      <text x="742" y="361" fill="#9aadb7" font-size="11" font-family="sans-serif">hidden while moving</text>
+      <text x="34" y="409" fill="#9aadb7" font-size="12" font-family="sans-serif">Bottom status bar: scan summary · selected/hovered path · FPS</text>
+    </svg>
+  </div>
+
+  <h2>Navigation</h2>
+  <div class="card-grid">
+    <section class="card"><h3>Select</h3><p><strong>Left-click</strong> a node in the 3D view to select it. Selecting in the directory tree or file list also selects the matching node in the 3D view.</p></section>
+    <section class="card"><h3>Look at / go to</h3><p><strong>Double-click</strong> a node in the 3D view, directory tree, or file list to move the camera to it. The <strong>Look at</strong> action in the selected-object toolbar also moves the camera.</p></section>
+    <section class="card"><h3>Rotate</h3><p>Hold <kbd>Ctrl</kbd> and <strong>left-drag</strong> over the 3D view to revolve the camera.</p></section>
+    <section class="card"><h3>Tilt</h3><p><strong>Middle-drag</strong> over the 3D view to tilt the camera.</p></section>
+    <section class="card"><h3>Zoom</h3><p>Use the <strong>mouse wheel</strong> over the 3D view to dolly in and out.</p></section>
+    <section class="card"><h3>Context actions</h3><p><strong>Right-click</strong> a node for actions such as Expand, Collapse, Look at, and Properties. Available actions depend on the node.</p></section>
+  </div>
+  <p>The horizontal and vertical scrollbars can also move the view. Use <strong>Navigation → Previous view</strong> to return to the previous camera target, or <strong>Look at filesystem root</strong> to go to the root.</p>
+
+  <h2>Views</h2>
+  <div class="card-grid">
+    <section class="card"><h3>MapV</h3><p>Shows the filesystem as a rectangular map. Folders contain their descendants; expanding a folder opens its region. This is the default view.</p></section>
+    <section class="card"><h3>TreeV</h3><p>Shows the hierarchy as a circular, tiered tree. Folder platforms can be expanded or collapsed. Very large trees can take longer to arrange and draw.</p></section>
+    <section class="card"><h3>Overview</h3><p>The header's <strong>Overview</strong> toggle switches to a bird's-eye view. Toggle it again to return to the ordinary camera view.</p></section>
+  </div>
+
+  <h2>Colors and legend</h2>
+  <p>Choose the coloring mode from the header's color menu or the hamburger menu's <strong>Colors</strong> menu. <strong>Colors → Setup…</strong> configures colors, timestamps, and wildcard groups. The floating legend updates to describe the active mode; toggle it with <strong>Settings → Show color legend</strong> or close it with its × button.</p>
+  <ul>
+    <li><strong>By node type:</strong> each filesystem node type uses its configured color.</li>
+    <li><strong>By timestamp:</strong> files use a spectrum based on access, modification, or attribute-change time. The selected oldest/newest range controls the endpoints. Directories keep their node-type colors.</li>
+    <li><strong>By wildcards:</strong> files use the first matching configured wildcard group, or the default color if none matches. Directories keep their node-type colors.</li>
+    <li><strong>By file type:</strong> files use semantic categories (source code, media, archives, system/executable, documents, or other). Directories use a muted color based on the dominant category in their contents.</li>
+  </ul>
+
+  <h2>Search</h2>
+  <p>Type part of a file or folder name in the header search field and press <kbd>Enter</kbd>. Search is case-insensitive and matches names anywhere in the scanned tree. Press <kbd>Enter</kbd> again to cycle through matches. The matching item becomes selected and the camera moves to it. The status bar reports the current match and total count. Search is limited to the currently scanned root; change root to search another part of the filesystem.</p>
+
+  <h2>Menus and settings</h2>
+  <table>
+    <thead><tr><th>Control</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>File → Change root…</td><td>Choose a new filesystem root to scan. Header shortcut: <kbd>Ctrl+N</kbd>.</td></tr>
+      <tr><td>File → Exit</td><td>Quit fsv. Header shortcut: <kbd>Ctrl+Q</kbd>.</td></tr>
+      <tr><td>Navigation → Previous view</td><td>Move the camera to the preceding visited target.</td></tr>
+      <tr><td>Vis → MapV / TreeV</td><td>Switch the visualization layout.</td></tr>
+      <tr><td>Colors → Setup…</td><td>Edit node-type colors, timestamp range/spectrum, and wildcard color groups.</td></tr>
+      <tr><td>Settings → Show FPS</td><td>Show or hide the application's render-callback FPS estimate. It is not a measurement of compositor-presented frames.</td></tr>
+      <tr><td>Settings → Enable CPU/GPU render profiling</td><td>Show per-second CPU and GPU render/picking timings in the terminal from which fsv was launched.</td></tr>
+      <tr><td>Settings → TreeV options</td><td>Toggle TreeV subtree culling, detail reduction, and hiding labels during camera movement.</td></tr>
+      <tr><td>Settings → MapV options</td><td>Toggle hiding labels during movement and reducing labels below readable size.</td></tr>
+      <tr><td>Settings → Show color legend</td><td>Show or hide the viewport's color legend.</td></tr>
+      <tr><td>Help → Contents…</td><td>Open this guide in the system's default browser.</td></tr>
+      <tr><td>Help → About fsv…</td><td>Show the in-application presentation.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Command line</h2>
+  <pre><code>fsv [options] [ROOTDIR]</code></pre>
+  <table>
+    <thead><tr><th>Option</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ROOTDIR</code></td><td>Directory to scan; defaults to the current working directory.</td></tr>
+      <tr><td><code>--mapv</code></td><td>Start in MapV (default).</td></tr>
+      <tr><td><code>--treev</code></td><td>Start in TreeV.</td></tr>
+      <tr><td><code>--backend auto|x11|wayland</code></td><td>Select GTK's display backend before GTK starts. <code>auto</code> uses GTK's normal session-based choice. On a Wayland desktop, X11 generally means XWayland. This does not select a different 3D renderer.</td></tr>
+      <tr><td><code>--cachedir DIR</code></td><td>Reserved for caching; currently prints a notice and has no caching effect.</td></tr>
+      <tr><td><code>--nocache</code></td><td>Reserved for caching; currently has no effect.</td></tr>
+      <tr><td><code>--help</code></td><td>Print the command-line help and exit.</td></tr>
+    </tbody>
+  </table>
+  <p><code>FSV_BACKEND=auto|x11|wayland</code> selects the backend when no valid <code>--backend</code> option overrides it. GTK chooses the default when no override is set. Backend performance varies by system and graphics driver.</p>
+  <pre><code>fsv ~/Documents
+fsv --treev --backend wayland ~
+FSV_BACKEND=x11 fsv ~</code></pre>
+
+  <p class="note"><strong>Performance measurements:</strong> use the same root, view, camera movement, and settings when comparing display backends. fsv's FPS display counts render callbacks; the optional profiler measures application CPU/GPU work, not frames actually presented by the compositor.</p>
+</body>
+</html>

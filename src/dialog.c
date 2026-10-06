@@ -14,9 +14,7 @@
 #include "dialog.h"
 
 #include <time.h>
-#include <unistd.h>
 #include <gtk/gtk.h>
-#include <errno.h>
 
 #include "animation.h"
 #include "camera.h"
@@ -54,24 +52,6 @@ close_cb( GtkWidget *unused, GtkWidget *window_w )
 #else
 	gtk_widget_destroy( window_w );
 #endif
-}
-
-
-/* End callback to allow time-bombed transient dialogs */
-static void
-transient_end_cb( Morph *morph )
-{
-	GtkWidget *window_w;
-
-	window_w = (GtkWidget *)morph->data;
-#if GTK_MAJOR_VERSION >= 4
-	gtk_window_destroy(window_w);
-#else
-	gtk_widget_destroy( window_w );
-#endif
-
-	/* Restore normal mouse cursor */
-	gui_cursor( main_window_w, -1 );
 }
 
 
@@ -188,34 +168,58 @@ csdialog_node_type_color_picker_cb( RGBcolor *picked_color, RGBcolor *node_type_
 
 /* Callback for the date edit widgets on the "By date/time" page */
 static void
-csdialog_time_edit_cb( GtkWidget *dateedit_w )
+csdialog_time_edit_cb( GtkWidget *dateedit_w, gpointer user_data )
 {
 	time_t old_time, new_time;
-	time_t cur_time;
+	time_t today;
+	time_t now;
+	struct tm old_date, new_date;
+	(void)user_data;
 
 	old_time = gui_dateedit_get_time( csdialog.time.old_dateedit_w );
 	new_time = gui_dateedit_get_time( csdialog.time.new_dateedit_w );
-	cur_time = time( NULL );
+	now = time(NULL);
+	if (localtime_r(&now, &old_date) == NULL)
+		return;
+	old_date.tm_hour = old_date.tm_min = old_date.tm_sec = 0;
+	old_date.tm_isdst = -1;
+	today = mktime(&old_date);
 
-	/* Check that neither time is in the future */
-	if (difftime( cur_time, new_time ) < 0.0)
-		new_time = cur_time;
-	if (difftime( cur_time, old_time ) < 0.0)
-		old_time = cur_time;
+	if (old_time > today)
+		old_time = today;
+	if (new_time > today)
+		new_time = today;
 
-	/* Check that old time is at least one minute before new time */
-	if (difftime( new_time, old_time ) < 60.0) {
-		if (dateedit_w == csdialog.time.old_dateedit_w)
-			new_time = old_time + (time_t)60;
-		else if (dateedit_w == csdialog.time.new_dateedit_w)
-			old_time = new_time - (time_t)60;
+	if (old_time >= new_time) {
+		if (dateedit_w == csdialog.time.old_dateedit_w) {
+			if (old_time >= today) {
+				if (localtime_r(&new_time, &old_date) == NULL)
+					return;
+				old_date.tm_mday--;
+				old_date.tm_isdst = -1;
+				old_time = mktime(&old_date);
+			}
+			else {
+				if (localtime_r(&old_time, &new_date) == NULL)
+					return;
+				new_date.tm_mday++;
+				new_date.tm_isdst = -1;
+				new_time = mktime(&new_date);
+			}
+		}
+		else if (dateedit_w == csdialog.time.new_dateedit_w) {
+			if (localtime_r(&new_time, &old_date) == NULL)
+				return;
+			old_date.tm_mday--;
+			old_date.tm_isdst = -1;
+			old_time = mktime(&old_date);
+		}
 		else {
 			g_assert_not_reached( );
 			return;
 		}
 	}
 
-	/* Reset old and new times */
 	g_signal_handlers_block_by_func(G_OBJECT(csdialog.time.old_dateedit_w), G_CALLBACK(csdialog_time_edit_cb), NULL);
 	g_signal_handlers_block_by_func(G_OBJECT(csdialog.time.new_dateedit_w), G_CALLBACK(csdialog_time_edit_cb), NULL);
 	gui_dateedit_set_time( csdialog.time.old_dateedit_w, old_time );
@@ -224,7 +228,13 @@ csdialog_time_edit_cb( GtkWidget *dateedit_w )
 	g_signal_handlers_unblock_by_func(G_OBJECT(csdialog.time.new_dateedit_w), G_CALLBACK(csdialog_time_edit_cb), NULL);
 
 	csdialog.color_config.by_timestamp.old_time = old_time;
-	csdialog.color_config.by_timestamp.new_time = new_time;
+	if (localtime_r(&new_time, &new_date) == NULL)
+		return;
+	new_date.tm_mday++;
+	new_date.tm_isdst = -1;
+	csdialog.color_config.by_timestamp.new_time = mktime(&new_date) - 1;
+	if (new_time == today)
+		csdialog.color_config.by_timestamp.new_time = now;
 }
 
 
@@ -233,6 +243,7 @@ static void
 csdialog_time_timestamp_combobox_changed(GtkComboBox *combobox, gpointer user_data)
 {
 	char *selected = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combobox));
+	(void)user_data;
 	if (!selected)
 		return;
 
@@ -245,12 +256,12 @@ csdialog_time_timestamp_combobox_changed(GtkComboBox *combobox, gpointer user_da
 	else if (strcmp(selected, time_last_change) == 0)
 		type = TIMESTAMP_ATTRIB;
 	else {
-		g_error("selected = %s\n", selected);
-		g_assert_not_reached( );
+		g_free(selected);
 		return;
 	}
 
 	csdialog.color_config.by_timestamp.timestamp_type = type;
+	g_free(selected);
 }
 
 
@@ -303,6 +314,7 @@ static void
 csdialog_time_spectrum_combobox_changed(GtkComboBox *cbox, gpointer user_data)
 {
 	char *selected = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(cbox));
+	(void)user_data;
 	if (!selected)
 		return;
 
@@ -314,15 +326,16 @@ csdialog_time_spectrum_combobox_changed(GtkComboBox *cbox, gpointer user_data)
 		type = SPECTRUM_HEAT;
 	else if (strcmp(selected, spectrum_gradient) == 0)
 		type = SPECTRUM_GRADIENT;
-	else {
-		g_assert_not_reached( );
-		return;
-	}
+	else
+		type = SPECTRUM_NONE;
 
 	/* Set new spectrum type and draw it */
-	csdialog.color_config.by_timestamp.spectrum_type = type;
-	gui_spectrum_fill(csdialog.time.spectrum_w, csdialog_time_spectrum_func);
-	csdialog_time_color_picker_set_access( type == SPECTRUM_GRADIENT );
+	if (type != SPECTRUM_NONE) {
+		csdialog.color_config.by_timestamp.spectrum_type = type;
+		gui_spectrum_fill(csdialog.time.spectrum_w, csdialog_time_spectrum_func);
+		csdialog_time_color_picker_set_access( type == SPECTRUM_GRADIENT );
+	}
+	g_free(selected);
 }
 
 
@@ -938,7 +951,8 @@ dialog_color_setup( void )
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), time_last_access);
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), time_last_modification);
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), time_last_change);
-	gtk_combo_box_set_active(GTK_COMBO_BOX(optmenu_w), 0);
+	gtk_combo_box_set_active(GTK_COMBO_BOX(optmenu_w),
+		csdialog.color_config.by_timestamp.timestamp_type);
 	g_signal_connect(optmenu_w, "changed", G_CALLBACK(csdialog_time_timestamp_combobox_changed), NULL);
         gui_table_attach( table_w, optmenu_w, 1, 2, 2, 3 );
 
@@ -965,7 +979,8 @@ dialog_color_setup( void )
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), spectrum_rainbow);
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), spectrum_heat);
 	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(optmenu_w), spectrum_gradient);
-	gtk_combo_box_set_active(GTK_COMBO_BOX(optmenu_w), 2);
+	gtk_combo_box_set_active(GTK_COMBO_BOX(optmenu_w),
+		csdialog.color_config.by_timestamp.spectrum_type);
 	g_signal_connect(optmenu_w, "changed", G_CALLBACK(csdialog_time_spectrum_combobox_changed), NULL);
 	gui_set_parent_child(hbox_w, optmenu_w);
 	gui_widget_packing( optmenu_w, EXPAND, NO_FILL, AT_START );
@@ -1043,42 +1058,50 @@ dialog_color_setup( void )
 void
 dialog_help( void )
 {
-	static double t;
-	GtkWidget *window_w;
-	GtkWidget *frame_w;
-	GtkWidget *hbox_w;
-	char location[] = "file:///" DOCDIR "/fsv.html";
-	char cmdbuf[2048];
-
-	/* Browser may take a few seconds to start up... */
-	gui_cursor( main_window_w, GDK_WATCH );
-	gui_update( );
-
-	/* Create message window to acknowledge action */
-	window_w = gui_dialog_window( _("Help"), NULL );
-	gtk_container_set_border_width( GTK_CONTAINER(window_w), 5 );
-	frame_w = gui_frame_add( window_w, NULL );
-	hbox_w = gui_hbox_add( frame_w, 10 );
-	gui_label_add( hbox_w, _("Launching help browser . . .") );
-	gtk_widget_show( window_w );
-	/* and time-bomb it */
-	morph_finish( &t );
-	t = 0.0;
-	morph_full( &t, MORPH_LINEAR, 1.0, 4.0, NULL, transient_end_cb, window_w );
-
-	if (xfork( )) {
-		/* Browser startup command */
-		sprintf( cmdbuf,
-		    "xdg-open %s > /dev/null 2>&1", location);
-
-		/* Execute command */
-		if (system(cmdbuf) != 0)
-			g_error("Failed to launch browser cmd: %s, error message: %s\n",
-				cmdbuf, g_strerror(errno));
-
-		/* End subprocess */
-		_exit( 0 );
+	char *installed_path = g_build_filename(DOCDIR, "fsv.html", NULL);
+	const char *help_path = g_file_test(installed_path, G_FILE_TEST_IS_REGULAR) ?
+		installed_path : HELPFILE;
+	GError *error = NULL;
+	if (!g_file_test(help_path, G_FILE_TEST_IS_REGULAR)) {
+		GtkWidget *message = gtk_message_dialog_new(GTK_WINDOW(main_window_w),
+			GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+			"%s", _("Could not locate the fsv help file."));
+		gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(message),
+			"%s", _("The help file is missing from both the installation and source locations."));
+		gtk_dialog_run(GTK_DIALOG(message));
+		gtk_widget_destroy(message);
+		g_free(installed_path);
+		return;
 	}
+
+	char *uri = g_filename_to_uri(help_path, NULL, &error);
+
+	if (uri == NULL) {
+		GtkWidget *message = gtk_message_dialog_new(GTK_WINDOW(main_window_w),
+			GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+			"%s", _("Could not locate the fsv help file."));
+		gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(message),
+			"%s", error != NULL ? error->message : _("Unknown file path error."));
+		gtk_dialog_run(GTK_DIALOG(message));
+		gtk_widget_destroy(message);
+		g_clear_error(&error);
+		g_free(installed_path);
+		return;
+	}
+
+	if (!g_app_info_launch_default_for_uri(uri, NULL, &error)) {
+		GtkWidget *message = gtk_message_dialog_new(GTK_WINDOW(main_window_w),
+			GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+			"%s", _("Could not open the fsv help in a browser."));
+		gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(message),
+			"%s", error != NULL ? error->message : _("No details are available."));
+		gtk_dialog_run(GTK_DIALOG(message));
+		gtk_widget_destroy(message);
+		g_clear_error(&error);
+	}
+
+	g_free(uri);
+	g_free(installed_path);
 }
 
 

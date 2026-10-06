@@ -32,6 +32,19 @@ Useful info and screenshots of the original SGI IRIX implementation are availabl
 4. Compile: `ninja -C builddir`
 5. Install: `sudo ninja -C builddir install`
 
+### Performance note: Wayland vs X11
+
+GTK selects the display backend for both the application UI and its OpenGL view. By default, GTK chooses the backend for the current session (typically native Wayland in a Wayland session). To select one explicitly, run:
+
+```bash
+./builddir/src/fsv --backend x11
+./builddir/src/fsv --backend wayland
+```
+
+On a Wayland desktop, selecting X11 generally runs through XWayland. The choice changes GTK's display path; it does not switch fsv to a different 3D renderer, and performance depends on the system and graphics drivers. Use `--backend auto` to return to GTK's default selection.
+
+The backend can also be selected with `FSV_BACKEND=x11`, `FSV_BACKEND=wayland`, or `FSV_BACKEND=auto`. A command-line `--backend` option takes precedence over `FSV_BACKEND`.
+
 ## TODO
 
 ### DONE Update to Gtk+3

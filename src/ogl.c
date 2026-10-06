@@ -22,6 +22,7 @@
 #include "geometry.h"
 #include "tmaptext.h" /* text_init( ) */
 #include "viewport.h"
+#include "window.h"
 
 
 /* Main viewport OpenGL area widget */
@@ -664,6 +665,8 @@ render(GtkGLArea *area, GdkGLContext *context)
 	{
 		boolean moving = camera_moving( ) || viewport_camera_dragging( );
 		boolean hide = FALSE;
+
+		window_set_motion_overlays(moving);
 
 		if (globals.fsv_mode == FSV_TREEV)
 			hide = geometry_treev_hide_labels_moving( );

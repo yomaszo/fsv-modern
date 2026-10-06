@@ -133,6 +133,15 @@ static RGBcolor filetype_directory_colors[6] = {
 	{ 0.62f, 0.75f, 0.77f }  /* other: pale blue gray */
 };
 
+static const char *filetype_category_names[COLOR_FILETYPE_CATEGORY_COUNT] = {
+	__("SOURCE CODE"),
+	__("MEDIA"),
+	__("ARCHIVES"),
+	__("SYSTEM / EXECUTABLE"),
+	__("DOCUMENTS"),
+	__("OTHER")
+};
+
 typedef struct FileTypeWeights {
 	guint64 bytes[6];
 } FileTypeWeights;
@@ -165,6 +174,21 @@ static const RGBcolor *
 filetype_color(GNode *node)
 {
 	return &filetype_colors[filetype_category(node)];
+}
+
+const char *
+color_filetype_category_name(int category)
+{
+	g_return_val_if_fail(category >= 0 && category < COLOR_FILETYPE_CATEGORY_COUNT, NULL);
+	return filetype_category_names[category];
+}
+
+RGBcolor
+color_filetype_category_color(int category)
+{
+	g_return_val_if_fail(category >= 0 && category < COLOR_FILETYPE_CATEGORY_COUNT,
+		((RGBcolor){0.0f, 0.0f, 0.0f}));
+	return filetype_colors[category];
 }
 
 /* Assign semantic colors bottom-up in one traversal. Directory face colors
@@ -423,6 +447,7 @@ color_set_mode( ColorMode mode )
 {
 	color_mode = mode;
 	color_assign_recursive( globals.fstree );
+	window_set_color_mode(mode);
 	redraw( );
 }
 

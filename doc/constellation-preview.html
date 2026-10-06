@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FSV · Constellation Map concept</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080d15;
+      --panel: #101824;
+      --panel-raised: #151f2c;
+      --line: #263447;
+      --text: #e4edf6;
+      --muted: #91a1b5;
+      --cyan: #69d7e5;
+      --violet: #a78bfa;
+      --green: #84d6ae;
+      --amber: #f2bc71;
+      --rose: #ee8ba4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-width: 320px;
+      margin: 0;
+      background:
+        radial-gradient(ellipse at 58% 45%, #122031 0, transparent 56%),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    button, select { color: inherit; font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar {
+      display: flex; align-items: center; gap: 22px;
+      min-height: 62px; padding: 0 22px;
+      background: #0c131e; border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: .02em; }
+    .brand-mark {
+      display: grid; place-items: center; width: 30px; height: 30px;
+      border: 1px solid #347481; border-radius: 9px; color: var(--cyan);
+      background: #102630; font-size: 13px;
+    }
+    .path { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+    .path b { color: var(--text); font-weight: 550; }
+    .top-spacer { flex: 1; }
+    .live { display: flex; align-items: center; gap: 7px; color: #9dd9bd; font-size: 12px; }
+    .live i { width: 7px; height: 7px; border-radius: 50%; background: #64d399; box-shadow: 0 0 12px #64d39988; }
+    .icon-button, .quiet-button, .primary-button {
+      border: 1px solid var(--line); border-radius: 8px; background: #111b28;
+      padding: 7px 10px;
+    }
+    .icon-button { width: 34px; padding: 6px; color: var(--muted); }
+    .workspace { display: grid; grid-template-columns: 224px minmax(0, 1fr) 264px; flex: 1; min-height: 0; }
+    aside { background: #0c131e; }
+    .left { border-right: 1px solid var(--line); padding: 18px 12px; }
+    .right { border-left: 1px solid var(--line); padding: 18px 14px; }
+    .section-title {
+      display: flex; justify-content: space-between; align-items: center;
+      margin: 0 5px 12px; color: #8292a6; font-size: 10px; font-weight: 750;
+      letter-spacing: .12em; text-transform: uppercase;
+    }
+    .tree { display: grid; gap: 3px; }
+    .tree-row {
+      display: flex; align-items: center; gap: 8px; min-height: 33px;
+      padding: 5px 8px; border: 1px solid transparent; border-radius: 7px;
+      color: #a8b6c7; text-align: left; background: transparent;
+    }
+    .tree-row:hover { background: #131f2c; }
+    .tree-row.active { color: #e2fbff; border-color: #245363; background: #112832; }
+    .tree-row.indent { padding-left: 25px; }
+    .tree-row.deep { padding-left: 43px; }
+    .tree-icon { width: 14px; color: var(--cyan); text-align: center; }
+    .tree-size { margin-left: auto; color: #77889b; font-size: 11px; }
+    .tree-footnote { margin: 16px 7px; color: #708095; font-size: 11px; }
+    .view-area { display: flex; min-width: 0; flex-direction: column; }
+    .toolbar {
+      display: flex; align-items: center; gap: 10px; min-height: 57px;
+      padding: 0 18px; border-bottom: 1px solid var(--line);
+    }
+    .view-switch { display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #0b121c; }
+    .view-switch button {
+      padding: 6px 10px; border: 0; border-radius: 6px; color: var(--muted); background: transparent;
+    }
+    .view-switch button.active { color: var(--text); background: #253449; box-shadow: 0 1px 4px #0008; }
+    .toolbar-label { color: var(--muted); font-size: 12px; }
+    select {
+      padding: 6px 27px 6px 9px; border: 1px solid var(--line);
+      border-radius: 7px; background: #101a27;
+    }
+    .toolbar .quiet-button { margin-left: auto; color: #b5c2d0; font-size: 12px; }
+    .canvas-wrap { position: relative; flex: 1; min-height: 450px; overflow: hidden; }
+    .canvas { display: block; width: 100%; height: 100%; min-height: 450px; }
+    .starfield { fill: #d2e6f7; opacity: .25; }
+    .connection { fill: none; stroke: #65849b; stroke-width: 1; stroke-dasharray: 3 7; opacity: .32; }
+    .region {
+      cursor: pointer; stroke-width: 1.4;
+      transition: filter .18s ease, stroke-width .18s ease, opacity .18s ease;
+    }
+    .region:hover, .region.selected { filter: url(#glow); stroke-width: 2.3; }
+    .region-label { fill: #edf7ff; font: 600 14px ui-sans-serif, system-ui, sans-serif; pointer-events: none; }
+    .region-meta { fill: #b9cbd7; font: 11px ui-sans-serif, system-ui, sans-serif; pointer-events: none; }
+    .cluster-dot { stroke: #0c1420; stroke-width: 1; opacity: .93; }
+    .cluster-label { fill: #e4edf5; font: 11px ui-sans-serif, system-ui, sans-serif; pointer-events: none; }
+    .focus-line { stroke: #a9ddec; stroke-width: 1; opacity: .33; }
+    .treemap-view { display: none; padding: 30px; }
+    .treemap-view.active { display: flex; flex-direction: column; gap: 10px; }
+    .treemap-row { display: flex; gap: 8px; min-height: 115px; }
+    .tile {
+      display: flex; min-width: 0; flex-direction: column; justify-content: space-between;
+      padding: 14px; border: 1px solid #ffffff22; border-radius: 10px;
+      background: linear-gradient(145deg, #36536d, #203448);
+      text-align: left; transition: filter .15s ease, transform .15s ease;
+    }
+    .tile:hover { filter: brightness(1.2); transform: translateY(-2px); }
+    .tile.project { flex: 2.4; background: linear-gradient(145deg, #296277, #183543); }
+    .tile.media { flex: 1.25; background: linear-gradient(145deg, #66528e, #342a4a); }
+    .tile.downloads { flex: .8; background: linear-gradient(145deg, #766041, #3d3324); }
+    .tile.system { flex: .62; background: linear-gradient(145deg, #3d725e, #213b32); }
+    .tile-top { color: #f0f6ff; font-weight: 650; }
+    .tile-bottom { color: #c0cfde; font-size: 12px; }
+    .canvas-hint {
+      position: absolute; left: 18px; bottom: 15px; color: #73859a;
+      font-size: 11px; pointer-events: none;
+    }
+    .legend {
+      position: absolute; top: 17px; left: 18px; display: flex; flex-wrap: wrap;
+      gap: 12px; padding: 8px 10px; border: 1px solid #263649; border-radius: 9px;
+      background: #0c131edb; backdrop-filter: blur(12px);
+      color: #a8b7c8; font-size: 11px;
+    }
+    .legend span { display: flex; align-items: center; gap: 6px; }
+    .legend i { width: 7px; height: 7px; border-radius: 50%; }
+    .inspector-title { margin: 3px 0 4px; font-size: 18px; }
+    .inspector-sub { margin: 0; color: var(--muted); font-size: 12px; }
+    .size-card {
+      margin: 17px 0; padding: 13px; border: 1px solid var(--line);
+      border-radius: 10px; background: #111b28;
+    }
+    .size-value { font-size: 25px; font-weight: 700; letter-spacing: -.04em; }
+    .size-caption { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .meter { height: 5px; margin-top: 12px; overflow: hidden; border-radius: 10px; background: #263346; }
+    .meter i { display: block; width: 37%; height: 100%; border-radius: inherit; background: var(--cyan); }
+    .detail-list { display: grid; gap: 11px; margin: 19px 0; }
+    .detail { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+    .detail dt { color: #8292a6; }
+    .detail dd { margin: 0; color: #d4e0eb; text-align: right; }
+    .divider { margin: 17px 0; border: 0; border-top: 1px solid var(--line); }
+    .contents-title { margin-bottom: 10px; color: #9cacc0; font-size: 11px; font-weight: 700; }
+    .file-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #1a2736; color: #aebccd; font-size: 12px; }
+    .file-row span:last-child { margin-left: auto; color: #8595a8; font-size: 11px; }
+    .selection-chip { margin-top: 17px; padding: 9px; border-radius: 7px; background: #122431; color: #9cbdc9; font-size: 11px; }
+    .footer {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      min-height: 37px; padding: 0 16px; border-top: 1px solid var(--line);
+      color: #77879b; font-size: 11px;
+    }
+    .footer strong { color: #b8c8d8; font-weight: 550; }
+    .help-pop {
+      position: fixed; right: 18px; bottom: 52px; max-width: 330px; padding: 13px 15px;
+      border: 1px solid #38516a; border-radius: 10px; background: #142130;
+      box-shadow: 0 12px 40px #0008; color: #b4c3d3; font-size: 12px;
+    }
+    .help-pop strong { display: block; margin-bottom: 4px; color: var(--text); }
+    @media (max-width: 950px) {
+      .workspace { grid-template-columns: 190px minmax(0, 1fr); }
+      .right { display: none; }
+      .toolbar { gap: 7px; padding: 0 10px; }
+      .toolbar-label { display: none; }
+    }
+    @media (max-width: 620px) {
+      .topbar { gap: 10px; padding: 0 12px; }
+      .live { display: none; }
+      .workspace { display: flex; flex-direction: column; }
+      .left { display: none; }
+      .canvas-wrap, .canvas, .treemap-view { min-height: 540px; }
+      .toolbar { flex-wrap: wrap; padding: 9px 10px; }
+      .toolbar .quiet-button { margin-left: auto; }
+      .footer span:last-child { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">fsv</span><span>Filesystem Atlas</span></div>
+      <div class="path">Home <span>›</span> <b id="breadcrumb">yomaha</b></div>
+      <div class="top-spacer"></div>
+      <div class="live"><i></i> Snapshot · just now</div>
+      <button class="icon-button" aria-label="Help" title="Concept preview">?</button>
+    </header>
+    <section class="workspace">
+      <aside class="left">
+        <h2 class="section-title">Places <span>⌕</span></h2>
+        <nav class="tree" aria-label="Folder regions">
+          <button class="tree-row active" data-region="home"><span class="tree-icon">⌂</span>yomaha<span class="tree-size">42 GB</span></button>
+          <button class="tree-row indent" data-region="project"><span class="tree-icon">▰</span>Projects<span class="tree-size">16.8 GB</span></button>
+          <button class="tree-row deep"><span class="tree-icon">◌</span>fsv-modern<span class="tree-size">2.4 GB</span></button>
+          <button class="tree-row deep"><span class="tree-icon">◌</span>mapv-experiments<span class="tree-size">8.1 GB</span></button>
+          <button class="tree-row indent" data-region="media"><span class="tree-icon">▰</span>Media<span class="tree-size">12.1 GB</span></button>
+          <button class="tree-row indent" data-region="downloads"><span class="tree-icon">▰</span>Downloads<span class="tree-size">8.5 GB</span></button>
+          <button class="tree-row indent" data-region="system"><span class="tree-icon">▰</span>Documents<span class="tree-size">4.6 GB</span></button>
+        </nav>
+        <p class="tree-footnote">Select a region to focus it.<br>Double-click to travel inside.</p>
+        <h2 class="section-title">Quick filters</h2>
+        <nav class="tree">
+          <button class="tree-row"><span class="tree-icon">◉</span>Largest items</button>
+          <button class="tree-row"><span class="tree-icon">◷</span>Recently changed</button>
+          <button class="tree-row"><span class="tree-icon">⌘</span>File types</button>
+        </nav>
+      </aside>
+
+      <section class="view-area">
+        <div class="toolbar">
+          <div class="view-switch" role="tablist" aria-label="Visualization mode">
+            <button class="active" id="constellation-tab" role="tab" aria-selected="true">✳ Constellation</button>
+            <button id="treemap-tab" role="tab" aria-selected="false">▦ Treemap</button>
+          </div>
+          <span class="toolbar-label">Color by</span>
+          <select aria-label="Color by">
+            <option>File type</option><option>Modified</option><option>Size</option>
+          </select>
+          <button class="quiet-button" id="reset-button">↺ Reset view</button>
+        </div>
+        <div class="canvas-wrap">
+          <svg class="canvas" id="sky-view" viewBox="0 0 900 600" role="img" aria-label="A constellation map of folders and file-type clusters">
+            <defs>
+              <radialGradient id="projectFill"><stop stop-color="#183f50" stop-opacity=".72"/><stop offset="1" stop-color="#102332" stop-opacity=".78"/></radialGradient>
+              <radialGradient id="mediaFill"><stop stop-color="#443768" stop-opacity=".76"/><stop offset="1" stop-color="#211f37" stop-opacity=".8"/></radialGradient>
+              <radialGradient id="downloadFill"><stop stop-color="#604a2d" stop-opacity=".76"/><stop offset="1" stop-color="#30271e" stop-opacity=".82"/></radialGradient>
+              <radialGradient id="docsFill"><stop stop-color="#2c5545" stop-opacity=".76"/><stop offset="1" stop-color="#1b302b" stop-opacity=".8"/></radialGradient>
+              <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="7" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <g class="starfield">
+              <circle cx="54" cy="125" r="1.2"/><circle cx="137" cy="83" r="1"/><circle cx="252" cy="144" r="1.4"/>
+              <circle cx="353" cy="78" r="1"/><circle cx="506" cy="109" r="1.2"/><circle cx="817" cy="98" r="1.3"/>
+              <circle cx="785" cy="217" r="1"/><circle cx="80" cy="396" r="1.4"/><circle cx="198" cy="510" r="1"/>
+              <circle cx="758" cy="465" r="1.1"/><circle cx="860" cy="387" r="1.2"/><circle cx="482" cy="534" r="1"/>
+              <circle cx="329" cy="491" r="1.3"/><circle cx="642" cy="80" r="1"/>
+            </g>
+            <g class="constellation">
+              <path class="connection" d="M166 310 C220 270 242 236 293 224 M166 310 C190 360 237 414 286 426 M293 224 C366 193 423 185 490 204 M286 426 C379 454 419 441 499 417 M490 204 C544 209 592 224 645 264 M499 417 C565 397 610 346 645 264"/>
+              <circle cx="166" cy="310" r="30" fill="#80e3eb" fill-opacity=".1" stroke="#80e3eb" stroke-opacity=".55"/>
+              <circle cx="166" cy="310" r="5" fill="#a9f5f4"/>
+              <text x="166" y="353" text-anchor="middle" class="region-label">yomaha</text>
+              <text x="166" y="370" text-anchor="middle" class="region-meta">42 GB · HOME</text>
+
+              <g data-region="project" class="region-group">
+                <circle class="region selected" cx="293" cy="224" r="100" fill="url(#projectFill)" stroke="#69d7e5" stroke-opacity=".7"/>
+                <circle class="cluster-dot" cx="267" cy="211" r="14" fill="#68d9e7"/>
+                <circle class="cluster-dot" cx="316" cy="191" r="10" fill="#66c5e2"/>
+                <circle class="cluster-dot" cx="339" cy="241" r="19" fill="#8e9bff"/>
+                <circle class="cluster-dot" cx="273" cy="260" r="8" fill="#a78bfa"/>
+                <circle class="cluster-dot" cx="304" cy="276" r="12" fill="#f2bc71"/>
+                <circle class="cluster-dot" cx="233" cy="231" r="6" fill="#ee8ba4"/>
+                <text x="293" y="319" text-anchor="middle" class="region-label">Projects</text>
+                <text x="293" y="337" text-anchor="middle" class="region-meta">16.8 GB · 1,204 items</text>
+                <text x="241" y="184" class="cluster-label">source</text>
+                <text x="335" y="169" class="cluster-label">builds</text>
+                <text x="348" y="244" class="cluster-label">assets</text>
+              </g>
+
+              <g data-region="media" class="region-group">
+                <circle class="region" cx="645" cy="264" r="132" fill="url(#mediaFill)" stroke="#a78bfa" stroke-opacity=".75"/>
+                <circle class="cluster-dot" cx="608" cy="231" r="22" fill="#a78bfa"/>
+                <circle class="cluster-dot" cx="667" cy="214" r="13" fill="#d28ee8"/>
+                <circle class="cluster-dot" cx="700" cy="263" r="18" fill="#8da7ff"/>
+                <circle class="cluster-dot" cx="632" cy="285" r="12" fill="#f18da9"/>
+                <circle class="cluster-dot" cx="681" cy="318" r="8" fill="#dcb9ff"/>
+                <circle class="cluster-dot" cx="584" cy="292" r="9" fill="#bd8afa"/>
+                <text x="645" y="365" text-anchor="middle" class="region-label">Media</text>
+                <text x="645" y="383" text-anchor="middle" class="region-meta">12.1 GB · 2,847 items</text>
+                <text x="583" y="198" class="cluster-label">photos</text>
+                <text x="681" y="191" class="cluster-label">video</text>
+              </g>
+
+              <g data-region="downloads" class="region-group">
+                <circle class="region" cx="499" cy="417" r="77" fill="url(#downloadFill)" stroke="#f2bc71" stroke-opacity=".72"/>
+                <circle class="cluster-dot" cx="478" cy="399" r="13" fill="#f2bc71"/>
+                <circle class="cluster-dot" cx="518" cy="390" r="9" fill="#d7a467"/>
+                <circle class="cluster-dot" cx="514" cy="435" r="16" fill="#eb8d75"/>
+                <circle class="cluster-dot" cx="474" cy="442" r="7" fill="#f5d28a"/>
+                <text x="499" y="500" text-anchor="middle" class="region-label">Downloads</text>
+                <text x="499" y="517" text-anchor="middle" class="region-meta">8.5 GB · 394 items</text>
+              </g>
+
+              <g data-region="system" class="region-group">
+                <circle class="region" cx="286" cy="426" r="48" fill="url(#docsFill)" stroke="#84d6ae" stroke-opacity=".76"/>
+                <circle class="cluster-dot" cx="275" cy="418" r="9" fill="#84d6ae"/>
+                <circle class="cluster-dot" cx="298" cy="437" r="7" fill="#d5ca84"/>
+                <text x="286" y="490" text-anchor="middle" class="region-label">Documents</text>
+                <text x="286" y="507" text-anchor="middle" class="region-meta">4.6 GB</text>
+              </g>
+              <circle cx="456" cy="284" r="2.5" fill="#93d9ee" opacity=".8"/>
+              <circle cx="416" cy="327" r="2" fill="#d0aaff" opacity=".8"/>
+              <circle cx="752" cy="419" r="2.2" fill="#b9e7d0" opacity=".8"/>
+            </g>
+          </svg>
+          <div class="legend" id="legend">
+            <span><i style="background:#69d7e5"></i>Code</span>
+            <span><i style="background:#a78bfa"></i>Media</span>
+            <span><i style="background:#f2bc71"></i>Archives</span>
+            <span><i style="background:#84d6ae"></i>Documents</span>
+          </div>
+          <div class="treemap-view" id="treemap-view" aria-label="Treemap overview">
+            <button class="tile project" data-region="project"><span class="tile-top">Projects</span><span class="tile-bottom">16.8 GB · source · builds · assets</span></button>
+            <button class="tile media" data-region="media"><span class="tile-top">Media</span><span class="tile-bottom">12.1 GB · photos · video</span></button>
+            <button class="tile downloads" data-region="downloads"><span class="tile-top">Downloads</span><span class="tile-bottom">8.5 GB</span></button>
+            <button class="tile system" data-region="system"><span class="tile-top">Documents</span><span class="tile-bottom">4.6 GB</span></button>
+          </div>
+          <div class="canvas-hint" id="canvas-hint">Click a region to inspect · double-click to explore it · scroll to zoom</div>
+        </div>
+      </section>
+
+      <aside class="right">
+        <h2 class="section-title">Region inspector <span>•••</span></h2>
+        <h1 class="inspector-title" id="inspector-title">Projects</h1>
+        <p class="inspector-sub" id="inspector-path">/home/yomaha/Projects</p>
+        <div class="size-card">
+          <div class="size-value" id="inspector-size">16.8 GB</div>
+          <div class="size-caption">of 42.0 GB in this filesystem</div>
+          <div class="meter"><i id="size-meter"></i></div>
+        </div>
+        <dl class="detail-list">
+          <div class="detail"><dt>Items</dt><dd id="inspector-items">1,204</dd></div>
+          <div class="detail"><dt>Folders</dt><dd id="inspector-folders">86</dd></div>
+          <div class="detail"><dt>Largest cluster</dt><dd id="inspector-cluster">build output</dd></div>
+          <div class="detail"><dt>Last changed</dt><dd id="inspector-date">Today, 14:32</dd></div>
+        </dl>
+        <hr class="divider">
+        <div class="contents-title">BIGGEST ITEMS</div>
+        <div class="file-row"><span>▣</span><span id="file-one">mapv-experiments</span><span>8.1 GB</span></div>
+        <div class="file-row"><span>▧</span><span id="file-two">builddir-release</span><span>2.4 GB</span></div>
+        <div class="file-row"><span>▤</span><span id="file-three">assets</span><span>1.2 GB</span></div>
+        <div class="selection-chip">◎ Selection stays connected to the directory tree and file list.</div>
+      </aside>
+    </section>
+    <footer class="footer">
+      <span><strong>42.0 GB</strong> scanned · 18,492 items · 4,218 folders</span>
+      <span>Concept preview · data is illustrative</span>
+      <span>Read-only scan</span>
+    </footer>
+  </main>
+  <script>
+    const details = {
+      home: {
+        title: "yomaha", path: "/home/yomaha", size: "42.0 GB", percent: 100,
+        items: "18,492", folders: "4,218", cluster: "Projects", date: "Just now",
+        files: ["Projects", "Media", "Downloads"], sizes: ["16.8 GB", "12.1 GB", "8.5 GB"]
+      },
+      project: {
+        title: "Projects", path: "/home/yomaha/Projects", size: "16.8 GB", percent: 40,
+        items: "1,204", folders: "86", cluster: "build output", date: "Today, 14:32",
+        files: ["mapv-experiments", "builddir-release", "assets"], sizes: ["8.1 GB", "2.4 GB", "1.2 GB"]
+      },
+      media: {
+        title: "Media", path: "/home/yomaha/Media", size: "12.1 GB", percent: 29,
+        items: "2,847", folders: "214", cluster: "photos", date: "Yesterday, 21:08",
+        files: ["camera-roll", "screen-recordings", "music"], sizes: ["6.4 GB", "3.2 GB", "1.1 GB"]
+      },
+      downloads: {
+        title: "Downloads", path: "/home/yomaha/Downloads", size: "8.5 GB", percent: 20,
+        items: "394", folders: "31", cluster: "archives", date: "Today, 09:17",
+        files: ["dataset.tar.zst", "debian.iso", "old-builds"], sizes: ["3.8 GB", "2.6 GB", "1.1 GB"]
+      },
+      system: {
+        title: "Documents", path: "/home/yomaha/Documents", size: "4.6 GB", percent: 11,
+        items: "1,030", folders: "147", cluster: "PDF reports", date: "Oct 4, 18:46",
+        files: ["research", "manuals", "invoices"], sizes: ["1.7 GB", "940 MB", "364 MB"]
+      }
+    };
+    const regions = [...document.querySelectorAll("[data-region]")];
+    function selectRegion(key) {
+      const info = details[key] || details.home;
+      document.querySelectorAll(".region").forEach(el => el.classList.remove("selected"));
+      document.querySelectorAll(`.region-group[data-region="${key}"] .region`).forEach(el => el.classList.add("selected"));
+      document.querySelectorAll(".tree-row").forEach(el => el.classList.toggle("active", el.dataset.region === key));
+      document.getElementById("inspector-title").textContent = info.title;
+      document.getElementById("inspector-path").textContent = info.path;
+      document.getElementById("inspector-size").textContent = info.size;
+      document.getElementById("inspector-items").textContent = info.items;
+      document.getElementById("inspector-folders").textContent = info.folders;
+      document.getElementById("inspector-cluster").textContent = info.cluster;
+      document.getElementById("inspector-date").textContent = info.date;
+      document.getElementById("breadcrumb").textContent = info.title;
+      document.getElementById("size-meter").style.width = info.percent + "%";
+      ["one", "two", "three"].forEach((n, i) => {
+        document.getElementById("file-" + n).textContent = info.files[i];
+        document.querySelector("#file-" + n).nextElementSibling.textContent = info.sizes[i];
+      });
+    }
+    regions.forEach(el => {
+      el.addEventListener("click", () => selectRegion(el.dataset.region));
+      el.addEventListener("dblclick", () => {
+        selectRegion(el.dataset.region);
+        document.getElementById("canvas-hint").textContent = "Exploring " + (details[el.dataset.region]?.title || "folder") + " · breadcrumb takes you back";
+      });
+    });
+    const constellationTab = document.getElementById("constellation-tab");
+    const treemapTab = document.getElementById("treemap-tab");
+    function setView(treemap) {
+      constellationTab.classList.toggle("active", !treemap);
+      treemapTab.classList.toggle("active", treemap);
+      constellationTab.setAttribute("aria-selected", String(!treemap));
+      treemapTab.setAttribute("aria-selected", String(treemap));
+      document.getElementById("sky-view").style.display = treemap ? "none" : "block";
+      document.getElementById("treemap-view").classList.toggle("active", treemap);
+      document.getElementById("legend").style.display = treemap ? "none" : "flex";
+      document.getElementById("canvas-hint").textContent = treemap ?
+        "Practical size view · area represents disk usage · click an item to inspect" :
+        "Click a region to inspect · double-click to explore it · scroll to zoom";
+    }
+    constellationTab.addEventListener("click", () => setView(false));
+    treemapTab.addEventListener("click", () => setView(true));
+    document.getElementById("reset-button").addEventListener("click", () => {
+      selectRegion("home");
+      document.getElementById("canvas-hint").textContent = "Click a region to inspect · double-click to explore it · scroll to zoom";
+    });
+  </script>
+</body>
+</html>

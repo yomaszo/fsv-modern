@@ -12,3 +12,6 @@ incdir = include_directories('..', '../lib')
 executable('fsv', sources: [srcs, gr],
   dependencies : [libmisc_dep, libdebug_dep, gtkdep, libm, cglm_dep],
   include_directories: incdir)
+
+install_data('fsv.html',
+  install_dir: get_option('datadir') / 'doc/fsv')

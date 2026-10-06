@@ -105,9 +105,17 @@ compare_node( GNode *a, GNode *b )
 {
 	boolean a_is_dir = NODE_IS_DIR(a);
 	boolean b_is_dir = NODE_IS_DIR(b);
+	char *a_name;
+	char *b_name;
+	int result;
 	if (a_is_dir != b_is_dir)
 		return a_is_dir ? -1 : 1;
-	return g_utf8_collate(NODE_DESC(a)->name, NODE_DESC(b)->name);
+	a_name = g_filename_display_name(NODE_DESC(a)->name);
+	b_name = g_filename_display_name(NODE_DESC(b)->name);
+	result = g_utf8_collate(a_name, b_name);
+	g_free(a_name);
+	g_free(b_name);
+	return result;
 }
 
 
@@ -142,14 +150,16 @@ filelist_populate( GNode *dnode )
 		const char *size_text = NODE_IS_DIR(node) ?
 			abbrev_size(DIR_NODE_DESC(node)->subtree.size) :
 			abbrev_size(NODE_DESC(node)->size);
+		char *display_name = g_filename_display_name(NODE_DESC(node)->name);
 		gtk_list_store_append(store, &it);
 
 		gtk_list_store_set(store, &it,
 				   FILELIST_ICON_COLUMN, node_type_symbolic_icons[NODE_DESC(node)->type],
-				   FILELIST_NAME_COLUMN, NODE_DESC(node)->name,
+				   FILELIST_NAME_COLUMN, display_name,
 				   FILELIST_SIZE_COLUMN, size_text,
 				   FILELIST_NODE_COLUMN, node,
 				   -1);
+		g_free(display_name);
 
 		node_llink = node_llink->next;
 	}

@@ -11,6 +11,7 @@ conf.set_quoted('PACKAGE', meson.project_name())
 conf.set_quoted('VERSION', meson.project_version())
 conf.set_quoted('LOCALEDIR', get_option('datadir') + '/locale')
 conf.set_quoted('DOCDIR', get_option('datadir') + '/doc/fsv')
+conf.set_quoted('HELPFILE', meson.current_source_dir() / 'src/fsv.html')
 
 has_gettext = compiler.has_function('gettext')
 if has_gettext

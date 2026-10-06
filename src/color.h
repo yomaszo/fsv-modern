@@ -40,6 +40,8 @@ typedef enum {
 	SPECTRUM_NONE
 } SpectrumType;
 
+#define COLOR_FILETYPE_CATEGORY_COUNT 6
+
 
 /* Used indirectly in struct ColorConfig (see below) */
 struct WPatternGroup {
@@ -78,6 +80,8 @@ void color_get_config( struct ColorConfig *ccfg );
 void color_assign_recursive( GNode *dnode );
 void color_set_mode( ColorMode mode );
 RGBcolor color_spectrum_color( SpectrumType type, double x, void *data );
+const char *color_filetype_category_name( int category );
+RGBcolor color_filetype_category_color( int category );
 void color_set_config( struct ColorConfig *new_ccfg, ColorMode mode );
 void color_write_config( void );
 void color_init( void );

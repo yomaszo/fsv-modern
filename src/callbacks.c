@@ -216,8 +216,14 @@ on_cd_root_button_clicked( GtkButton *button, gpointer user_data )
 void
 on_cd_up_button_clicked( GtkButton *button, gpointer user_data )
 {
-	if (NODE_IS_DIR(globals.current_node->parent))
-		camera_look_at( globals.current_node->parent );
+	GNode *parent;
+
+	if (globals.current_node == NULL)
+		return;
+
+	parent = globals.current_node->parent;
+	if (parent != NULL && NODE_IS_DIR(parent))
+		camera_look_at( parent );
 }
 
 

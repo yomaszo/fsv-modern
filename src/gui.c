@@ -571,37 +571,51 @@ gui_cursor( GtkWidget *widget, int glyph )
 }
 
 
-/* The date edit widget (imported from Gnomeland). The given callback is
- * called whenever the date/time is changed */
+/* The date selector. Its callback runs whenever the selected day changes. */
 GtkWidget *
-gui_dateedit_add( GtkWidget *parent_w, time_t the_time, void (*callback)( ), void *callback_data )
+gui_dateedit_add( GtkWidget *parent_w, time_t the_time,
+	void (*callback)( GtkWidget *, gpointer ), void *callback_data )
 {
 	GtkWidget *dateedit_w = gtk_calendar_new();
-
-	/*dateedit_w = gnome_date_edit_new( the_time, TRUE, TRUE );
-	gnome_date_edit_set_popup_range( GNOME_DATE_EDIT(dateedit_w), 0, 23 );
-	gtk_signal_connect( GTK_OBJECT(dateedit_w), "date_changed", GTK_SIGNAL_FUNC(callback), callback_data );
-	gtk_signal_connect( GTK_OBJECT(dateedit_w), "time_changed", GTK_SIGNAL_FUNC(callback), callback_data );
-	parent_child( parent_w, dateedit_w );*/
+	struct tm date;
+	if (localtime_r(&the_time, &date) != NULL) {
+		gtk_calendar_select_month(GTK_CALENDAR(dateedit_w), date.tm_mon,
+			date.tm_year + 1900);
+		gtk_calendar_select_day(GTK_CALENDAR(dateedit_w), date.tm_mday);
+	}
+	if (callback != NULL)
+		g_signal_connect(dateedit_w, "day-selected", G_CALLBACK(callback), callback_data);
+	if (parent_w != NULL)
+		parent_child(parent_w, dateedit_w);
 
 	return dateedit_w;
 }
 
-
-/* Reads current time from a date edit widget */
+/* Reads the selected local calendar date at midnight. */
 time_t
 gui_dateedit_get_time( GtkWidget *dateedit_w )
 {
-	//return gnome_date_edit_get_date( GNOME_DATE_EDIT(dateedit_w) );
-	return 0;
+	guint year, month, day;
+	struct tm date = {0};
+	gtk_calendar_get_date(GTK_CALENDAR(dateedit_w), &year, &month, &day);
+	date.tm_year = (int)year - 1900;
+	date.tm_mon = (int)month;
+	date.tm_mday = (int)day;
+	date.tm_isdst = -1;
+	return mktime(&date);
 }
 
 
-/* Sets the time on a date edit widget */
+/* Selects the local calendar date containing the supplied time. */
 void
 gui_dateedit_set_time( GtkWidget *dateedit_w, time_t the_time )
 {
-	//gnome_date_edit_set_time( GNOME_DATE_EDIT(dateedit_w), the_time );
+	struct tm date;
+	if (localtime_r(&the_time, &date) == NULL)
+		return;
+	gtk_calendar_select_month(GTK_CALENDAR(dateedit_w), date.tm_mon,
+		date.tm_year + 1900);
+	gtk_calendar_select_day(GTK_CALENDAR(dateedit_w), date.tm_mday);
 }
 
 

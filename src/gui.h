@@ -92,7 +92,8 @@ GtkWidget *gui_filelist_scan_new(GtkWidget *parent_w);
 GtkWidget *gui_tree_add( GtkWidget *parent_w );
 GtkTreePath *gui_tree_node_add( GtkWidget *tree_w, GtkTreePath *parent, Icon icon_pair[2], const char *text, boolean expanded, GNode *data );
 void gui_cursor( GtkWidget *widget, int glyph );
-GtkWidget *gui_dateedit_add( GtkWidget *parent_w, time_t the_time, void (*callback)( ), void *callback_data );
+GtkWidget *gui_dateedit_add( GtkWidget *parent_w, time_t the_time,
+	void (*callback)( GtkWidget *, gpointer ), void *callback_data );
 time_t gui_dateedit_get_time( GtkWidget *dateedit_w );
 void gui_dateedit_set_time( GtkWidget *dateedit_w, time_t the_time );
 GtkWidget *gui_entry_add( GtkWidget *parent_w, const char *init_text, void (*callback)( ), void *callback_data );

@@ -622,7 +622,6 @@ mapv_init( void )
 	mapv_cursor_prev_c1.z = 0.25 * k * MAPV_NODE_DEPTH(root_dnode);
 }
 
-
 /* Hook function for camera pan completion */
 static void
 mapv_camera_pan_finished( void )
@@ -4297,9 +4296,14 @@ treev_gldraw_cursor( RTZvec *c0, RTZvec *c1 )
 	int seg_count;
 	int i, c, s;
 
-	g_assert( c1->r > c0->r );
-	g_assert( c1->theta > c0->theta );
-	g_assert( c1->z > c0->z );
+	/* A rapidly retargeted TreeV camera can briefly draw while the
+	 * selected node's platform is being rearranged. Do not let a
+	 * transient degenerate cursor box abort the whole application. */
+	if (!isfinite(c0->r) || !isfinite(c1->r) ||
+	    !isfinite(c0->theta) || !isfinite(c1->theta) ||
+	    !isfinite(c0->z) || !isfinite(c1->z) ||
+	    c1->r <= c0->r || c1->theta <= c0->theta || c1->z <= c0->z)
+		return;
 
 	corner_dims.r = bar_part * (c1->r - c0->r);
 	corner_dims.theta = bar_part * (c1->theta - c0->theta);
