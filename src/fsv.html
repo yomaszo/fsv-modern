@@ -64,6 +64,8 @@
       background: #08111a;
     }
     .diagram svg { display: block; width: 100%; height: auto; }
+    .screenshot img { display: block; width: 100%; height: auto; border-radius: 8px; }
+    figcaption { margin-top: 10px; color: var(--muted); font-size: .9rem; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
     th { color: var(--accent); }
@@ -79,7 +81,7 @@
 
   <h2>Getting started</h2>
   <p>fsv scans the directory you choose and builds a 3D view of its folders and files. A large tree may take time to scan and arrange. The application opens in <strong>MapV</strong> unless you choose TreeV with the <strong>Vis</strong> menu or <code>--treev</code>.</p>
-  <p>To change the scanned root while the app is open, use <strong>File → Change root…</strong> or the header's <strong>Set as root</strong> button.</p>
+  <p>To change which directory is scanned, use <strong>File → Change root…</strong>. The header's <strong>Root</strong> button only moves the camera to the root of the currently scanned tree.</p>
 
   <h2>Window map</h2>
   <div class="diagram">
@@ -88,7 +90,7 @@
       <desc id="map-desc">The header is at the top. The directory tree and file list are at left. The 3D viewport is central. Breadcrumb, properties, object actions, and legend panels appear over the viewport.</desc>
       <rect x="12" y="12" width="876" height="406" rx="16" fill="#0d1822" stroke="#385363" stroke-width="2"/>
       <rect x="24" y="24" width="852" height="54" rx="9" fill="#192a37" stroke="#385363"/>
-      <text x="43" y="57" fill="#78d7df" font-size="17" font-family="sans-serif">Menu · MapV / TreeV / Gource · Root · Up · Overview</text>
+      <text x="43" y="57" fill="#78d7df" font-size="17" font-family="sans-serif">Menu · MapV / TreeV · Root · Up · Overview</text>
       <rect x="610" y="36" width="150" height="30" rx="7" fill="#0b151f" stroke="#385363"/>
       <text x="627" y="56" fill="#9aadb7" font-size="14" font-family="sans-serif">Search</text>
       <rect x="772" y="36" width="88" height="30" rx="7" fill="#243b49"/>
@@ -123,9 +125,16 @@
       <text x="34" y="409" fill="#9aadb7" font-size="12" font-family="sans-serif">Bottom status bar: scan summary · selected/hovered path · FPS</text>
     </svg>
   </div>
+  <figure class="diagram screenshot">
+    <img src="fsv-mapv.png" alt="FSV running in MapV, showing its navigation header, directory and file panels, 3D filesystem map, selected-folder properties, and color legend.">
+    <figcaption>FSV in MapV. The directory and file panels are on the left, with the 3D map and contextual panels in the main viewport.</figcaption>
+  </figure>
 
   <h2>Navigation</h2>
   <div class="card-grid">
+    <section class="card"><h3>Root</h3><p>The header's <strong>Root</strong> button moves the camera to the root directory of the currently scanned tree. It does not change or rescan the selected root; use <strong>File → Change root…</strong> to scan a different directory.</p></section>
+    <section class="card"><h3>Up</h3><p>The header's <strong>Up</strong> button moves the camera to the parent directory of the current camera target, when one exists.</p></section>
+    <section class="card"><h3>Overview</h3><p>The header's <strong>Overview</strong> toggle changes the camera to a bird's-eye framing of the current directory in the active MapV or TreeV layout. It is a navigation/camera mode, not a separate filesystem view. Toggle it again to restore the previous camera position.</p></section>
     <section class="card"><h3>Select</h3><p><strong>Left-click</strong> a node in the 3D view to select it. Selecting in the directory tree or file list also selects the matching node in the 3D view.</p></section>
     <section class="card"><h3>Look at / go to</h3><p><strong>Double-click</strong> a node in the 3D view, directory tree, or file list to move the camera to it. The <strong>Look at</strong> action in the selected-object toolbar also moves the camera.</p></section>
     <section class="card"><h3>Rotate</h3><p>Hold <kbd>Ctrl</kbd> and <strong>left-drag</strong> over the 3D view to revolve the camera.</p></section>
@@ -133,13 +142,12 @@
     <section class="card"><h3>Zoom</h3><p>Use the <strong>mouse wheel</strong> over the 3D view to dolly in and out.</p></section>
     <section class="card"><h3>Context actions</h3><p><strong>Right-click</strong> a node for actions such as Expand, Collapse, Look at, and Properties. Available actions depend on the node.</p></section>
   </div>
-  <p>The horizontal and vertical scrollbars can also move the view. Use <strong>Navigation → Previous view</strong> to return to the previous camera target, or <strong>Look at filesystem root</strong> to go to the root.</p>
+  <p>The horizontal and vertical scrollbars can also move the camera. Use <strong>Navigation → Previous view</strong> to return to the previous camera target, or the header's <strong>Root</strong> button to navigate to the scanned root.</p>
 
   <h2>Views</h2>
   <div class="card-grid">
     <section class="card"><h3>MapV</h3><p>Shows the filesystem as a rectangular map. Folders contain their descendants; expanding a folder opens its region. This is the default view.</p></section>
     <section class="card"><h3>TreeV</h3><p>Shows the hierarchy as a circular, tiered tree. Folder platforms can be expanded or collapsed. Very large trees can take longer to arrange and draw.</p></section>
-    <section class="card"><h3>Overview</h3><p>The header's <strong>Overview</strong> toggle switches to a bird's-eye view. Toggle it again to return to the ordinary camera view.</p></section>
   </div>
 
   <h2>Colors and legend</h2>
@@ -188,9 +196,26 @@
     </tbody>
   </table>
   <p><code>FSV_BACKEND=auto|x11|wayland</code> selects the backend when no valid <code>--backend</code> option overrides it. GTK chooses the default when no override is set. Backend performance varies by system and graphics driver.</p>
+  <h3>Startup environment variables</h3>
+  <p>Set these variables before launching <code>fsv</code>. Performance variables set startup defaults; the corresponding Settings menu items can change them while the program is running.</p>
+  <table>
+    <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>FSV_TREEV_NO_CULL=1</code></td><td>Disable TreeV subtree culling, which is enabled by default. This may make large trees slower to draw.</td></tr>
+      <tr><td><code>FSV_TREEV_NO_LOD=1</code></td><td>Disable TreeV level-of-detail filtering for labels and off-screen leaves. This may reduce performance, especially on large trees.</td></tr>
+      <tr><td><code>FSV_TREEV_HIDE_LABELS_MOVING=1</code></td><td>Hide TreeV labels while the camera moves. This is off by default.</td></tr>
+      <tr><td><code>FSV_MAPV_HIDE_LABELS_MOVING=1</code></td><td>Hide MapV labels while the camera moves. This is off by default.</td></tr>
+      <tr><td><code>FSV_MAPV_NO_HIDE_LABELS_MOVING=1</code></td><td>Force MapV labels to remain visible while the camera moves. This overrides <code>FSV_MAPV_HIDE_LABELS_MOVING</code> if both are set.</td></tr>
+      <tr><td><code>FSV_MAPV_NO_LABEL_LOD=1</code></td><td>Disable MapV's label size filtering, keeping small labels visible.</td></tr>
+      <tr><td><code>FSV_PROFILE=1</code></td><td>Print periodic CPU and, when supported by the graphics driver, GPU render/picking timings to the terminal. Set to <code>0</code> or unset to disable.</td></tr>
+    </tbody>
+  </table>
+  <p>The <code>FSV_TREEV_NO_…</code> and <code>FSV_MAPV_…</code> switches are enabled by being present, regardless of their value; unset them to turn the behavior off. For example, <code>FSV_TREEV_NO_LOD=1</code> disables TreeV level-of-detail filtering. Debug diagnostics are also available: <code>FSV_DEBUG_ARRANGE=1</code>, <code>FSV_DEBUG_LABELS=1</code>, and <code>FSV_DEBUG_CULL=1</code> print TreeV layout, label, and culling diagnostics to the terminal and can produce verbose output.</p>
   <pre><code>fsv ~/Documents
 fsv --treev --backend wayland ~
-FSV_BACKEND=x11 fsv ~</code></pre>
+FSV_BACKEND=x11 fsv ~
+FSV_TREEV_NO_LOD=1 fsv --treev ~
+FSV_PROFILE=1 fsv ~</code></pre>
 
   <p class="note"><strong>Performance measurements:</strong> use the same root, view, camera movement, and settings when comparing display backends. fsv's FPS display counts render callbacks; the optional profiler measures application CPU/GPU work, not frames actually presented by the compositor.</p>
 </body>

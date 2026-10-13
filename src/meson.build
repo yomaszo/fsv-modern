@@ -11,7 +11,8 @@ srcs = ['about.c', 'animation.c', 'callbacks.c', 'camera.c', 'colexp.c',
 incdir = include_directories('..', '../lib')
 executable('fsv', sources: [srcs, gr],
   dependencies : [libmisc_dep, libdebug_dep, gtkdep, libm, cglm_dep],
-  include_directories: incdir)
+  include_directories: incdir,
+  install: true)
 
-install_data('fsv.html',
+install_data('fsv.html', 'fsv-mapv.png',
   install_dir: get_option('datadir') / 'doc/fsv')

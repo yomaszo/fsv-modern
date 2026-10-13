@@ -356,14 +356,6 @@ window_header_view_toggled(GtkToggleButton *button, gpointer user_data)
 }
 
 static void
-window_change_root_clicked(GtkButton *button, gpointer user_data)
-{
-	(void)button;
-	(void)user_data;
-	dialog_change_root();
-}
-
-static void
 window_menu_look_at_root(GtkMenuItem *item, gpointer user_data)
 {
 	(void)item;
@@ -1293,8 +1285,8 @@ window_init(GtkApplication *app, gpointer user_data)
 	gtk_widget_show_all(hbox_w);
 
 	button_w = gtk_button_new();
-	window_button_icon_label(button_w, "find-location-symbolic", _("Set as root"));
-	g_signal_connect(button_w, "clicked", G_CALLBACK(window_change_root_clicked), NULL);
+	window_button_icon_label(button_w, "go-home-symbolic", _("Root"));
+	g_signal_connect(button_w, "clicked", G_CALLBACK(on_cd_root_button_clicked), NULL);
 	G_LIST_APPEND(sw_widget_list, button_w);
 	gtk_header_bar_pack_start(GTK_HEADER_BAR(header_w), button_w);
 	gtk_widget_show(button_w);
