@@ -14,6 +14,7 @@
 #include "window.h"
 
 #include <gtk/gtk.h>
+#include <errno.h>
 #include <time.h>
 
 #include "about.h"
@@ -44,8 +45,28 @@ static GtkWidget *color_mode_label_w;
 static GtkWidget *mapv_view_button_w;
 static GtkWidget *treev_view_button_w;
 static GtkWidget *search_entry_w;
+static GtkWidget *search_popover_w;
+static GtkWidget *search_results_list_w;
+static GtkWidget *search_results_info_w;
 static gchar *search_last_query;
 static gchar *search_last_match_path;
+static gchar *search_results_query;
+static gchar *search_results_error;
+static GPtrArray *search_results;
+typedef struct {
+	GNode *node;
+	gchar *folded_path;
+	gchar *folded_relative_path;
+	int64 size;
+	NodeType type;
+	guint index;
+} SearchIndexEntry;
+static GPtrArray *search_index;
+static GHashTable *search_index_by_node;
+static GNode *search_index_root;
+static guint search_refresh_source;
+static gboolean search_dropdown_navigation_active;
+#define SEARCH_VISIBLE_RESULT_LIMIT 50
 
 /* Bird's-eye view toggle in the header */
 static GtkWidget *overview_tbutton_w;
@@ -102,12 +123,47 @@ static guint properties_scan_source;
 static void window_refresh_context_toolbar(void);
 static void window_add_style_class(GtkWidget *widget, const char *class_name);
 static void window_update_properties_panel(void);
+static gboolean window_search_refresh(gpointer user_data);
+
+static void
+window_search_index_entry_free(gpointer data)
+{
+	SearchIndexEntry *entry = data;
+	g_free(entry->folded_path);
+	g_free(entry->folded_relative_path);
+	g_free(entry);
+}
+
+static void
+window_search_index_clear(void)
+{
+	g_clear_pointer(&search_index_by_node, g_hash_table_unref);
+	g_clear_pointer(&search_index, g_ptr_array_unref);
+	search_index_root = NULL;
+}
 
 void
 window_reset_search(void)
 {
+	window_search_index_clear();
+	if (search_refresh_source != 0) {
+		g_source_remove(search_refresh_source);
+		search_refresh_source = 0;
+	}
 	g_clear_pointer(&search_last_query, g_free);
 	g_clear_pointer(&search_last_match_path, g_free);
+	g_clear_pointer(&search_results_query, g_free);
+	g_clear_pointer(&search_results_error, g_free);
+	g_clear_pointer(&search_results, g_ptr_array_unref);
+	search_dropdown_navigation_active = FALSE;
+	if (search_results_list_w != NULL) {
+		GList *rows = gtk_container_get_children(GTK_CONTAINER(search_results_list_w));
+		for (GList *link = rows; link != NULL; link = link->next)
+			gtk_widget_destroy(GTK_WIDGET(link->data));
+		g_list_free(rows);
+	}
+	if (search_popover_w != NULL)
+		gtk_popover_popdown(GTK_POPOVER(search_popover_w));
 	if (search_entry_w != NULL)
 		gtk_entry_set_text(GTK_ENTRY(search_entry_w), "");
 }
@@ -132,80 +188,583 @@ window_search_fold(const char *text)
 }
 
 static void
-window_search_activate(GtkEntry *entry, gpointer user_data)
+window_search_index_build(void)
 {
-	const char *text = gtk_entry_get_text(entry);
-	gchar *query = g_strstrip(g_strdup(text));
-	gchar *folded_query;
-	GNode *node, *first_match = NULL, *next_match = NULL, *match = NULL;
-	gboolean previous_match_seen;
-	guint match_count = 0, next_match_index = 0;
-	(void)user_data;
+	GNode *node;
+	gchar *root_path;
+	gsize root_path_len;
+
+	window_search_index_clear();
+	if (root_dnode == NULL)
+		return;
+
+	search_index = g_ptr_array_new_with_free_func(window_search_index_entry_free);
+	search_index_by_node = g_hash_table_new(g_direct_hash, g_direct_equal);
+	root_path = g_strdup(node_absname(root_dnode));
+	root_path_len = strlen(root_path);
+	for (node = root_dnode; node != NULL; node = window_next_search_node(node)) {
+		const char *absolute_path;
+		const char *relative_path;
+		SearchIndexEntry *entry;
+
+		if (NODE_IS_METANODE(node))
+			continue;
+		absolute_path = node_absname(node);
+		relative_path = absolute_path;
+		if (g_str_has_prefix(absolute_path, root_path)) {
+			const char *suffix = absolute_path + root_path_len;
+			if (*suffix == '/' || *suffix == '\0') {
+				relative_path = suffix;
+				while (*relative_path == '/')
+					relative_path++;
+			}
+		}
+		entry = g_new0(SearchIndexEntry, 1);
+		entry->node = node;
+		entry->folded_path = window_search_fold(absolute_path);
+		entry->folded_relative_path = window_search_fold(relative_path);
+		entry->size = NODE_DESC(node)->size;
+		entry->type = NODE_DESC(node)->type;
+		entry->index = search_index->len;
+		g_ptr_array_add(search_index, entry);
+		g_hash_table_insert(search_index_by_node, node, entry);
+	}
+	g_free(root_path);
+	search_index_root = root_dnode;
+}
+
+static const char *
+window_search_index_basename(const SearchIndexEntry *entry)
+{
+	const char *basename = strrchr(entry->folded_path, '/');
+	return basename != NULL ? basename + 1 : entry->folded_path;
+}
+
+typedef enum {
+	SEARCH_SIZE_GE,
+	SEARCH_SIZE_GT,
+	SEARCH_SIZE_LE,
+	SEARCH_SIZE_LT,
+	SEARCH_SIZE_EQ
+} SearchSizeOperator;
+
+typedef enum {
+	SEARCH_TYPE_ANY,
+	SEARCH_TYPE_FILE,
+	SEARCH_TYPE_FOLDER
+} SearchTypeFilter;
+
+static gboolean
+window_search_parse_size(const char *expression, SearchSizeOperator *op,
+			 long double *size)
+{
+	char *number_end;
+	char *unit;
+	double number;
+	long double multiplier = 1.0L;
+	static const struct {
+		const char *unit;
+		long double multiplier;
+	} units[] = {
+		{ "b", 1.0L },
+		{ "k", 1000.0L }, { "kb", 1000.0L },
+		{ "m", 1000000.0L }, { "mb", 1000000.0L },
+		{ "g", 1000000000.0L }, { "gb", 1000000000.0L },
+		{ "t", 1000000000000.0L }, { "tb", 1000000000000.0L },
+		{ "kib", 1024.0L }, { "mib", 1048576.0L },
+		{ "gib", 1073741824.0L }, { "tib", 1099511627776.0L }
+	};
+	guint i;
+
+	if (*expression == '>') {
+		if (expression[1] == '=') {
+			*op = SEARCH_SIZE_GE;
+			expression += 2;
+		}
+		else {
+			*op = SEARCH_SIZE_GT;
+			expression++;
+		}
+	}
+	else if (*expression == '<') {
+		if (expression[1] == '=') {
+			*op = SEARCH_SIZE_LE;
+			expression += 2;
+		}
+		else {
+			*op = SEARCH_SIZE_LT;
+			expression++;
+		}
+	}
+	else if (*expression == '=') {
+		*op = SEARCH_SIZE_EQ;
+		expression++;
+	}
+	else
+		*op = SEARCH_SIZE_GE;
+
+	if (*expression == '\0')
+		return FALSE;
+	errno = 0;
+	number = g_ascii_strtod(expression, &number_end);
+	if (number_end == expression || errno == ERANGE || !isfinite(number) || number < 0.0)
+		return FALSE;
+
+	unit = g_ascii_strdown(number_end, -1);
+	if (*unit != '\0') {
+		for (i = 0; i < G_N_ELEMENTS(units); i++) {
+			if (strcmp(unit, units[i].unit) == 0) {
+				multiplier = units[i].multiplier;
+				break;
+			}
+		}
+		if (i == G_N_ELEMENTS(units)) {
+			g_free(unit);
+			return FALSE;
+		}
+	}
+	g_free(unit);
+
+	*size = (long double)number * multiplier;
+	return *size <= (long double)G_MAXINT64;
+}
+
+static gboolean
+window_search_extract_filters(gchar *query, gboolean *has_size_filter,
+			      SearchSizeOperator *size_op, long double *size,
+			      SearchTypeFilter *type_filter, gboolean *in_selected)
+{
+	char *cursor = query;
+	gboolean has_type_filter = FALSE;
+	*has_size_filter = FALSE;
+	*type_filter = SEARCH_TYPE_ANY;
+	*in_selected = FALSE;
+
+	while (*cursor != '\0') {
+		char *token, *end;
+		while (g_ascii_isspace(*cursor))
+			cursor++;
+		if (*cursor == '\0')
+			break;
+		token = cursor;
+		while (*cursor != '\0' && !g_ascii_isspace(*cursor))
+			cursor++;
+		end = cursor;
+
+		if ((end - token) >= 5 && g_ascii_strncasecmp(token, "size:", 5) == 0) {
+			char *expression = g_strndup(token + 5, end - token - 5);
+			gboolean valid = !*has_size_filter &&
+				window_search_parse_size(expression, size_op, size);
+			g_free(expression);
+			if (!valid)
+				return FALSE;
+			*has_size_filter = TRUE;
+			memmove(token, end, strlen(end) + 1);
+			cursor = token;
+		}
+		else if ((end - token) >= 5 && g_ascii_strncasecmp(token, "type:", 5) == 0) {
+			char *value = g_strndup(token + 5, end - token - 5);
+			gboolean valid = !has_type_filter;
+			if (valid && g_ascii_strcasecmp(value, "file") == 0)
+				*type_filter = SEARCH_TYPE_FILE;
+			else if (valid && g_ascii_strcasecmp(value, "folder") == 0)
+				*type_filter = SEARCH_TYPE_FOLDER;
+			else
+				valid = FALSE;
+			g_free(value);
+			if (!valid)
+				return FALSE;
+			has_type_filter = TRUE;
+			memmove(token, end, strlen(end) + 1);
+			cursor = token;
+		}
+		else if ((end - token) >= 3 && g_ascii_strncasecmp(token, "in:", 3) == 0) {
+			char *value = g_strndup(token + 3, end - token - 3);
+			gboolean valid = !*in_selected &&
+				g_ascii_strcasecmp(value, "selected") == 0;
+			g_free(value);
+			if (!valid)
+				return FALSE;
+			*in_selected = TRUE;
+			memmove(token, end, strlen(end) + 1);
+			cursor = token;
+		}
+	}
+
+	g_strstrip(query);
+	return TRUE;
+}
+
+static gboolean
+window_search_size_matches(int64 node_size, SearchSizeOperator op,
+			   long double size)
+{
+	long double bytes = (long double)MAX(node_size, (int64)0);
+
+	switch (op) {
+		case SEARCH_SIZE_GE: return bytes >= size;
+		case SEARCH_SIZE_GT: return bytes > size;
+		case SEARCH_SIZE_LE: return bytes <= size;
+		case SEARCH_SIZE_LT: return bytes < size;
+		case SEARCH_SIZE_EQ: return bytes == size;
+	}
+	g_assert_not_reached();
+	return FALSE;
+}
+
+static GPtrArray *
+window_search_collect_results(const char *input, GNode *selected_at_search,
+			      gchar **error)
+{
+	gchar *query = g_strstrip(g_strdup(input));
+	gchar *folded_query = NULL;
+	GPatternSpec *pattern_spec = NULL;
+	GPtrArray *results = g_ptr_array_new();
+	gboolean has_size_filter, wildcard, in_selected;
+	SearchSizeOperator size_op = SEARCH_SIZE_GE;
+	SearchTypeFilter type_filter;
+	long double size_limit = 0.0L;
+	GNode *scope = NULL;
+	guint i = 0;
 
 	if (*query == '\0') {
 		g_free(query);
-		return;
+		return results;
 	}
 	if (globals.fsv_mode == FSV_SPLASH || root_dnode == NULL) {
-		window_statusbar(SB_RIGHT, _("Please wait for the filesystem scan to finish."));
-		g_free(query);
-		return;
+		*error = g_strdup(_("Please wait for the filesystem scan to finish."));
+		goto done;
+	}
+	if (!window_search_extract_filters(query, &has_size_filter, &size_op, &size_limit,
+					   &type_filter, &in_selected) ||
+	    (*query == '\0' && !has_size_filter && type_filter == SEARCH_TYPE_ANY && !in_selected)) {
+		*error = g_strdup(_("Invalid search filter. Use type:file, type:folder, in:selected, or size:>100MB."));
+		goto done;
+	}
+	if (in_selected) {
+		if (selected_at_search == NULL || !NODE_IS_DIR(selected_at_search)) {
+			*error = g_strdup(_("Select a folder before searching with in:selected."));
+			goto done;
+		}
+		scope = selected_at_search;
+	}
+	folded_query = *query != '\0' ? window_search_fold(query) : NULL;
+	wildcard = folded_query != NULL && strpbrk(folded_query, "*?[") != NULL;
+	if (wildcard)
+		pattern_spec = g_pattern_spec_new(folded_query);
+	if (search_index == NULL || search_index_root != root_dnode)
+		window_search_index_build();
+	if (scope != NULL) {
+		SearchIndexEntry *scope_entry = search_index_by_node != NULL ?
+			g_hash_table_lookup(search_index_by_node, scope) : NULL;
+		if (scope_entry == NULL) {
+			*error = g_strdup(_("The selected folder is no longer available. Run the search again."));
+			goto done;
+		}
+		i = scope_entry->index + 1;
 	}
 
-	if (g_strcmp0(query, search_last_query) != 0) {
-		g_free(search_last_query);
-		search_last_query = g_strdup(query);
-		g_clear_pointer(&search_last_match_path, g_free);
-	}
-
-	folded_query = window_search_fold(query);
-	previous_match_seen = search_last_match_path == NULL;
-	for (node = root_dnode; node != NULL; node = window_next_search_node(node)) {
-		gchar *folded_name;
-		gboolean is_match;
-		if (NODE_IS_METANODE(node))
+	for (; search_index != NULL && i < search_index->len; i++) {
+		SearchIndexEntry *entry = g_ptr_array_index(search_index, i);
+		const char *basename = window_search_index_basename(entry);
+		gboolean is_match = TRUE;
+		if (scope != NULL && !g_node_is_ancestor(scope, entry->node))
+			break;
+		if (type_filter == SEARCH_TYPE_FILE && entry->type != NODE_REGFILE)
 			continue;
-		folded_name = window_search_fold(NODE_DESC(node)->name);
-		is_match = strstr(folded_name, folded_query) != NULL;
-		g_free(folded_name);
+		if (type_filter == SEARCH_TYPE_FOLDER && entry->type != NODE_DIRECTORY)
+			continue;
+		if ((wildcard || has_size_filter) &&
+		    type_filter != SEARCH_TYPE_FOLDER && entry->type != NODE_REGFILE)
+			continue;
+		if (has_size_filter && entry->type != NODE_REGFILE)
+			continue;
+		if (has_size_filter &&
+		    !window_search_size_matches(entry->size, size_op, size_limit))
+			continue;
+		if (folded_query != NULL) {
+			if (wildcard) {
+				is_match = g_pattern_spec_match_string(pattern_spec, basename) ||
+					g_pattern_spec_match_string(pattern_spec,
+						entry->folded_relative_path);
+			}
+			else
+				is_match = strstr(entry->folded_path, folded_query) != NULL;
+		}
 		if (!is_match)
 			continue;
-
-		match_count++;
-		if (first_match == NULL)
-			first_match = node;
-		if (!previous_match_seen) {
-			if (g_strcmp0(node_absname(node), search_last_match_path) == 0) {
-				previous_match_seen = TRUE;
-			}
-		}
-		else if (next_match == NULL) {
-			next_match = node;
-			next_match_index = match_count;
-		}
+		g_ptr_array_add(results, entry->node);
 	}
 
+done:
+	if (pattern_spec != NULL)
+		g_pattern_spec_free(pattern_spec);
 	g_free(folded_query);
-	if (match_count == 0) {
-		g_clear_pointer(&search_last_match_path, g_free);
-		window_statusbar(SB_RIGHT, _("No files or folders match that search."));
-		g_free(query);
-		return;
+	g_free(query);
+	return results;
+}
+
+static void
+window_search_populate_results(void)
+{
+	GList *rows = gtk_container_get_children(GTK_CONTAINER(search_results_list_w));
+	guint i, visible_count;
+
+	if (search_results == NULL)
+		search_results = g_ptr_array_new();
+	visible_count = MIN(search_results->len, SEARCH_VISIBLE_RESULT_LIMIT);
+
+	for (GList *link = rows; link != NULL; link = link->next)
+		gtk_widget_destroy(GTK_WIDGET(link->data));
+	g_list_free(rows);
+
+	for (i = 0; i < visible_count; i++) {
+		GNode *node = g_ptr_array_index(search_results, i);
+		const char *path = node_absname(node);
+		gchar *display_path = g_filename_display_name(path);
+		gchar *formatted_size = NULL;
+		gchar *row_text;
+		GtkWidget *row = gtk_list_box_row_new();
+		GtkWidget *label = gtk_label_new(NULL);
+
+		if (NODE_DESC(node)->type == NODE_REGFILE)
+			formatted_size = g_format_size(MAX(NODE_DESC(node)->size, (int64)0));
+		row_text = formatted_size != NULL ?
+			g_strdup_printf("%s  —  %s", display_path, formatted_size) :
+			g_strdup(display_path);
+		gtk_label_set_text(GTK_LABEL(label), row_text);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+		gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+		gtk_label_set_width_chars(GTK_LABEL(label), 64);
+		gtk_label_set_max_width_chars(GTK_LABEL(label), 80);
+		gtk_widget_set_tooltip_text(row, display_path);
+		gtk_widget_set_margin_start(label, 8);
+		gtk_widget_set_margin_end(label, 8);
+		gtk_widget_set_margin_top(label, 5);
+		gtk_widget_set_margin_bottom(label, 5);
+		gtk_container_add(GTK_CONTAINER(row), label);
+		g_object_set_data(G_OBJECT(row), "fsv-search-result-index", GUINT_TO_POINTER(i + 1));
+		gtk_list_box_insert(GTK_LIST_BOX(search_results_list_w), row, -1);
+		g_free(display_path);
+		g_free(formatted_size);
+		g_free(row_text);
 	}
 
-	match = next_match != NULL ? next_match : first_match;
-	if (next_match == NULL)
-		next_match_index = 1;
-	g_free(search_last_match_path);
-	search_last_match_path = g_strdup(node_absname(match));
-	window_set_selected_node(match);
-	camera_look_at(match);
+	if (visible_count == 0) {
+		GtkWidget *row = gtk_list_box_row_new();
+		GtkWidget *label = gtk_label_new(search_results_error != NULL ?
+			search_results_error : _("No matching files or folders."));
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+		gtk_widget_set_margin_start(label, 8);
+		gtk_widget_set_margin_top(label, 8);
+		gtk_widget_set_margin_bottom(label, 8);
+		gtk_container_add(GTK_CONTAINER(row), label);
+		gtk_widget_set_sensitive(row, FALSE);
+		gtk_list_box_insert(GTK_LIST_BOX(search_results_list_w), row, -1);
+	}
 
-	gchar *message = g_strdup_printf(_("Search result %u of %u: %s"),
-		next_match_index, match_count, node_absname(match));
+	if (search_results_error != NULL)
+		gtk_label_set_text(GTK_LABEL(search_results_info_w), search_results_error);
+	else if (search_results->len > SEARCH_VISIBLE_RESULT_LIMIT) {
+		gchar *message = g_strdup_printf(
+			_("Showing the first %u of %u matches; Enter cycles through all."),
+			SEARCH_VISIBLE_RESULT_LIMIT, search_results->len);
+		gtk_label_set_text(GTK_LABEL(search_results_info_w), message);
+		g_free(message);
+	}
+	else {
+		gchar *message = g_strdup_printf(
+			ngettext("%u match", "%u matches", search_results->len),
+			search_results->len);
+		gtk_label_set_text(GTK_LABEL(search_results_info_w), message);
+		g_free(message);
+	}
+	gtk_widget_show_all(search_popover_w);
+	if (search_results_query != NULL && *search_results_query != '\0')
+		gtk_popover_popup(GTK_POPOVER(search_popover_w));
+	else
+		gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+}
+
+static gboolean
+window_search_refresh(gpointer user_data)
+{
+	gchar *query;
+	(void)user_data;
+
+	search_refresh_source = 0;
+	query = g_strstrip(g_strdup(gtk_entry_get_text(GTK_ENTRY(search_entry_w))));
+	g_clear_pointer(&search_results, g_ptr_array_unref);
+	g_clear_pointer(&search_results_query, g_free);
+	g_clear_pointer(&search_results_error, g_free);
+	search_results = window_search_collect_results(query, selected_node,
+		&search_results_error);
+	search_results_query = g_strdup(query);
+	window_search_populate_results();
+	g_free(query);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+window_search_changed(GtkEditable *editable, gpointer user_data)
+{
+	const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
+	gchar *query = g_strstrip(g_strdup(text));
+	(void)user_data;
+
+	if (g_strcmp0(query, search_last_query) != 0)
+		g_clear_pointer(&search_last_match_path, g_free);
+	search_dropdown_navigation_active = FALSE;
+	g_clear_pointer(&search_results_query, g_free);
+	if (search_refresh_source != 0) {
+		g_source_remove(search_refresh_source);
+		search_refresh_source = 0;
+	}
+	if (*query == '\0') {
+		g_clear_pointer(&search_results, g_ptr_array_unref);
+		g_clear_pointer(&search_results_error, g_free);
+		if (search_results_list_w != NULL)
+			window_search_populate_results();
+		else if (search_popover_w != NULL)
+			gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+	}
+	else {
+		if (search_popover_w != NULL)
+			gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+		g_clear_pointer(&search_results, g_ptr_array_unref);
+		g_clear_pointer(&search_results_error, g_free);
+		search_refresh_source = g_timeout_add(180, window_search_refresh, NULL);
+	}
+	g_free(query);
+}
+
+static void
+window_search_select_result(guint index)
+{
+	GNode *node = g_ptr_array_index(search_results, index);
+	gchar *path = g_strdup(node_absname(node));
+	gchar *message;
+
+	g_free(search_last_match_path);
+	search_last_match_path = g_strdup(path);
+	g_free(search_last_query);
+	search_last_query = g_strdup(search_results_query);
+	window_set_selected_node(node);
+	camera_look_at(node);
+	message = g_strdup_printf(_("Search result %u of %u: %s"),
+		index + 1, search_results->len, path);
 	window_statusbar(SB_RIGHT, message);
 	g_free(message);
+	g_free(path);
+	if (index < SEARCH_VISIBLE_RESULT_LIMIT) {
+		GtkListBoxRow *row = gtk_list_box_get_row_at_index(
+			GTK_LIST_BOX(search_results_list_w), index);
+		if (row != NULL)
+			gtk_list_box_select_row(GTK_LIST_BOX(search_results_list_w), row);
+	}
+	else
+		gtk_list_box_unselect_all(GTK_LIST_BOX(search_results_list_w));
+	search_dropdown_navigation_active = FALSE;
+}
+
+static void
+window_search_cycle(gboolean backwards)
+{
+	gchar *query = g_strstrip(g_strdup(gtk_entry_get_text(GTK_ENTRY(search_entry_w))));
+	gint current = -1;
+	guint i, next;
+
+	if (search_results_query == NULL || g_strcmp0(query, search_results_query) != 0) {
+		if (search_refresh_source != 0) {
+			g_source_remove(search_refresh_source);
+			search_refresh_source = 0;
+		}
+		window_search_refresh(NULL);
+	}
 	g_free(query);
+	if (search_results_error != NULL) {
+		window_statusbar(SB_RIGHT, search_results_error);
+		return;
+	}
+	if (search_results == NULL || search_results->len == 0) {
+		window_statusbar(SB_RIGHT, _("No files or folders match that search."));
+		return;
+	}
+	if (search_last_match_path != NULL) {
+		for (i = 0; i < search_results->len; i++) {
+			GNode *node = g_ptr_array_index(search_results, i);
+			if (g_strcmp0(node_absname(node), search_last_match_path) == 0) {
+				current = i;
+				break;
+			}
+		}
+	}
+	if (backwards)
+		next = current <= 0 ? search_results->len - 1 : current - 1;
+	else
+		next = current < 0 || (guint)current + 1 == search_results->len ? 0 : current + 1;
+	window_search_select_result(next);
+}
+
+static void
+window_search_row_activated(GtkListBox *listbox, GtkListBoxRow *row, gpointer user_data)
+{
+	guint index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(row), "fsv-search-result-index"));
+	(void)listbox;
+	(void)user_data;
+	if (index == 0 || search_results == NULL || index > search_results->len)
+		return;
+	window_search_select_result(index - 1);
+	gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+}
+
+static gboolean
+window_search_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+{
+	GtkListBoxRow *selected;
+	gint selected_index;
+	guint visible_count;
+	(void)widget;
+	(void)user_data;
+
+	if (event->keyval == GDK_KEY_Escape) {
+		if (gtk_widget_get_visible(search_popover_w))
+			gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+		else if (*gtk_entry_get_text(GTK_ENTRY(search_entry_w)) != '\0')
+			gtk_entry_set_text(GTK_ENTRY(search_entry_w), "");
+		return TRUE;
+	}
+	if (event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down) {
+		visible_count = search_results != NULL ?
+			MIN(search_results->len, SEARCH_VISIBLE_RESULT_LIMIT) : 0;
+		if (!gtk_widget_get_visible(search_popover_w) || visible_count == 0)
+			return FALSE;
+		selected = gtk_list_box_get_selected_row(GTK_LIST_BOX(search_results_list_w));
+		selected_index = selected != NULL ? gtk_list_box_row_get_index(selected) : -1;
+		if (event->keyval == GDK_KEY_Down)
+			selected_index = (selected_index + 1) % visible_count;
+		else
+			selected_index = selected_index <= 0 ? visible_count - 1 : selected_index - 1;
+		selected = gtk_list_box_get_row_at_index(GTK_LIST_BOX(search_results_list_w), selected_index);
+		gtk_list_box_select_row(GTK_LIST_BOX(search_results_list_w), selected);
+		search_dropdown_navigation_active = TRUE;
+		return TRUE;
+	}
+	if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+		if ((event->state & GDK_SHIFT_MASK) != 0) {
+			window_search_cycle(TRUE);
+		}
+		else {
+			selected = gtk_list_box_get_selected_row(GTK_LIST_BOX(search_results_list_w));
+			if (gtk_widget_get_visible(search_popover_w) && selected != NULL &&
+			    search_dropdown_navigation_active)
+				window_search_row_activated(GTK_LIST_BOX(search_results_list_w), selected, NULL);
+			else
+				window_search_cycle(FALSE);
+		}
+		return TRUE;
+	}
+	return FALSE;
 }
 
 static gboolean
@@ -1120,6 +1679,8 @@ window_init(GtkApplication *app, gpointer user_data)
 	GtkWidget *right_vbox_w;
 	GtkWidget *hbox_w;
 	GtkWidget *button_w;
+	GtkWidget *search_results_box_w;
+	GtkWidget *search_results_scroll_w;
 	GtkWidget *directory_section_w;
 	GtkWidget *files_section_w;
 	GtkWidget *section_label_w;
@@ -1308,10 +1869,41 @@ window_init(GtkApplication *app, gpointer user_data)
 	search_entry_w = gtk_search_entry_new();
 	gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry_w), _("Search files and folders…"));
 	gtk_widget_set_tooltip_text(search_entry_w,
-		_("Enter a name to find it; press Enter again to cycle through matches."));
+		_("Search names or paths with wildcards, type/size filters, or in:selected; Enter cycles results."));
 	gtk_widget_set_size_request(search_entry_w, 260, -1);
 	window_add_style_class(search_entry_w, "fsv-search");
-	g_signal_connect(search_entry_w, "activate", G_CALLBACK(window_search_activate), NULL);
+	g_signal_connect(search_entry_w, "changed", G_CALLBACK(window_search_changed), NULL);
+	g_signal_connect(search_entry_w, "key-press-event", G_CALLBACK(window_search_key_press), NULL);
+	gui_keybind(search_entry_w, _("^F"));
+
+	search_popover_w = gtk_popover_new(search_entry_w);
+	window_add_style_class(search_popover_w, "fsv-search-results");
+	gtk_popover_set_position(GTK_POPOVER(search_popover_w), GTK_POS_BOTTOM);
+	gtk_popover_set_modal(GTK_POPOVER(search_popover_w), FALSE);
+	search_results_box_w = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	search_results_scroll_w = gtk_scrolled_window_new(NULL, NULL);
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(search_results_scroll_w),
+		GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+	gtk_widget_set_size_request(search_results_scroll_w, 500, 260);
+	search_results_list_w = gtk_list_box_new();
+	gtk_list_box_set_selection_mode(GTK_LIST_BOX(search_results_list_w), GTK_SELECTION_SINGLE);
+	gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(search_results_list_w), TRUE);
+	g_signal_connect(search_results_list_w, "row-activated",
+		G_CALLBACK(window_search_row_activated), NULL);
+	gtk_container_add(GTK_CONTAINER(search_results_scroll_w), search_results_list_w);
+	search_results_info_w = gtk_label_new("");
+	gtk_label_set_xalign(GTK_LABEL(search_results_info_w), 0.0f);
+	gtk_widget_set_margin_start(search_results_info_w, 10);
+	gtk_widget_set_margin_end(search_results_info_w, 10);
+	gtk_widget_set_margin_top(search_results_info_w, 6);
+	gtk_widget_set_margin_bottom(search_results_info_w, 6);
+	window_add_style_class(search_results_info_w, "fsv-search-info");
+	gtk_box_pack_start(GTK_BOX(search_results_box_w), search_results_scroll_w, TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(search_results_box_w), search_results_info_w, FALSE, FALSE, 0);
+	gtk_container_add(GTK_CONTAINER(search_popover_w), search_results_box_w);
+	gtk_widget_show_all(search_popover_w);
+	gtk_popover_popdown(GTK_POPOVER(search_popover_w));
+
 	gtk_header_bar_set_custom_title(GTK_HEADER_BAR(header_w), search_entry_w);
 	gtk_widget_show(search_entry_w);
 

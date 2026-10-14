@@ -81,6 +81,16 @@ entry.fsv-search {
 }
 headerbar.fsv-header entry:focus,
 entry.fsv-search:focus { border-color: @fsv_accent; box-shadow: 0 0 0 2px alpha(@fsv_accent, 0.25); }
+popover.fsv-search-results {
+  background-color: @fsv_raise;
+  border: 1px solid @fsv_edge;
+  border-radius: 10px;
+}
+popover.fsv-search-results list { background-color: transparent; }
+popover.fsv-search-results row { color: @fsv_text; padding: 2px; }
+popover.fsv-search-results row:hover,
+popover.fsv-search-results row:selected { background-color: @fsv_sel; color: @fsv_accent; }
+label.fsv-search-info { color: @fsv_dim; font-size: 11px; }
 
 /* Segmented MapV / TreeV switch: a horizontal GtkBox (spacing 0, style class
  * "fsv-segmented") holding two GtkRadioButtons with draw-indicator = FALSE */

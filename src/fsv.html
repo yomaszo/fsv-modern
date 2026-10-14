@@ -87,14 +87,26 @@
   <div class="diagram">
     <svg viewBox="0 0 900 430" role="img" aria-labelledby="map-title map-desc">
       <title id="map-title">Map of fsv's main window</title>
-      <desc id="map-desc">The header is at the top. The directory tree and file list are at left. The 3D viewport is central. Breadcrumb, properties, object actions, and legend panels appear over the viewport.</desc>
+      <desc id="map-desc">The header includes menus, MapV and TreeV controls, navigation buttons, search, a color-mode menu, and settings. The directory tree and file list are at left. The 3D viewport is central. Breadcrumb, properties, object actions, and legend panels appear over the viewport.</desc>
       <rect x="12" y="12" width="876" height="406" rx="16" fill="#0d1822" stroke="#385363" stroke-width="2"/>
       <rect x="24" y="24" width="852" height="54" rx="9" fill="#192a37" stroke="#385363"/>
-      <text x="43" y="57" fill="#78d7df" font-size="17" font-family="sans-serif">Menu · MapV / TreeV · Root · Up · Overview</text>
-      <rect x="610" y="36" width="150" height="30" rx="7" fill="#0b151f" stroke="#385363"/>
-      <text x="627" y="56" fill="#9aadb7" font-size="14" font-family="sans-serif">Search</text>
-      <rect x="772" y="36" width="88" height="30" rx="7" fill="#243b49"/>
-      <text x="790" y="56" fill="#dbe8ec" font-size="14" font-family="sans-serif">Settings</text>
+      <text x="42" y="57" fill="#78d7df" font-size="15" font-family="sans-serif">Menu</text>
+      <rect x="91" y="32" width="81" height="38" rx="7" fill="#125260"/>
+      <text x="102" y="57" fill="#78d7df" font-size="14" font-family="sans-serif">MapV</text>
+      <rect x="176" y="32" width="74" height="38" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="184" y="57" fill="#dbe8ec" font-size="14" font-family="sans-serif">TreeV</text>
+      <rect x="257" y="32" width="62" height="38" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="268" y="57" fill="#dbe8ec" font-size="14" font-family="sans-serif">Root</text>
+      <rect x="325" y="32" width="48" height="38" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="333" y="57" fill="#dbe8ec" font-size="14" font-family="sans-serif">Up</text>
+      <rect x="379" y="32" width="86" height="38" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="389" y="57" fill="#dbe8ec" font-size="14" font-family="sans-serif">Overview</text>
+      <rect x="483" y="36" width="136" height="30" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="497" y="56" fill="#9aadb7" font-size="13" font-family="sans-serif">Search</text>
+      <rect x="627" y="32" width="142" height="38" rx="7" fill="#0b151f" stroke="#385363"/>
+      <text x="636" y="57" fill="#dbe8ec" font-size="12" font-family="sans-serif">Color: By type</text>
+      <rect x="777" y="36" width="83" height="30" rx="7" fill="#243b49"/>
+      <text x="784" y="56" fill="#dbe8ec" font-size="13" font-family="sans-serif">Settings</text>
       <rect x="24" y="90" width="230" height="300" rx="9" fill="#14212c" stroke="#385363"/>
       <text x="43" y="120" fill="#78d7df" font-size="15" font-family="sans-serif">DIRECTORIES</text>
       <path d="M48 145h12m8 0h12m8 0h12M48 174h12m8 0h12M48 203h12" stroke="#708a97" stroke-width="2"/>
@@ -160,7 +172,17 @@
   </ul>
 
   <h2>Search</h2>
-  <p>Type part of a file or folder name in the header search field and press <kbd>Enter</kbd>. Search is case-insensitive and matches names anywhere in the scanned tree. Press <kbd>Enter</kbd> again to cycle through matches. The matching item becomes selected and the camera moves to it. The status bar reports the current match and total count. Search is limited to the currently scanned root; change root to search another part of the filesystem.</p>
+  <p>Results appear in a dropdown as you type, with each item's full path and regular-file size. The first search builds a reusable index for the current root; after that, search updates are delayed briefly while you type and reuse the index instead of rebuilding paths on each query. Press <kbd>Enter</kbd> to select the next result; press <kbd>Shift</kbd>+<kbd>Enter</kbd> to go to the previous result. Use <kbd>Up</kbd>/<kbd>Down</kbd> to highlight a visible dropdown result and <kbd>Enter</kbd> to select it. Click a result to select it immediately. Up to 50 results are shown at once; Enter cycles through all matches.</p>
+  <p>Plain text search is case-insensitive and matches names or paths anywhere in the scanned tree. Use shell-style wildcards to match regular files: <code>*.jpg</code> finds files ending in <code>.jpg</code>, <code>report-202?.pdf</code> uses <code>?</code> for any single character, and <code>photo-[12].jpg</code> matches either listed character. Wildcards match a file name or its path relative to the scanned root, so <code>drivers/*.jpg</code> searches within that subdirectory.</p>
+  <p>Add a <code>size:</code> condition to filter regular files by size. Comparisons support <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>, <code>&lt;=</code>, and <code>=</code>. A size without an operator means “at least”. Units <code>B</code>, <code>KB</code>, <code>MB</code>, <code>GB</code>, and <code>TB</code> use decimal multiples; <code>KiB</code>, <code>MiB</code>, <code>GiB</code>, and <code>TiB</code> use powers of 1024. Unitless sizes are bytes. Size comparisons apply to regular files; when a size condition is used, directories and other special entries are excluded.</p>
+  <p>Use <code>type:file</code> to show regular files only or <code>type:folder</code> to show directories only. Add <code>in:selected</code> to search inside the directory selected when that query runs. Select a folder first; if the current selection is a file, this filter reports that a folder is required. The selected directory itself is not included, only its contents. While a query is unchanged, later selection changes do not alter its results; edit the query to run it again with a new selected folder.</p>
+  <pre><code>*.jpg size:&gt;100MB
+size:&gt;=1GiB
+backup* size:&gt;500MiB
+*.log size:&lt;=2MB
+type:folder in:selected
+*.jpg size:&gt;100MB type:file in:selected</code></pre>
+  <p>Press <kbd>Ctrl</kbd>+<kbd>F</kbd> to focus the search field. Press <kbd>Escape</kbd> to close the dropdown, or press it again to clear the query. Search is limited to the currently scanned root; use <strong>File → Change root…</strong> to search another directory.</p>
 
   <h2>Menus and settings</h2>
   <table>
